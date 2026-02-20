@@ -26,18 +26,27 @@ _client: QdrantClient | None = None
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
-        kwargs: dict[str, Any] = {
-            "host": settings.QDRANT_HOST,
-            "port": settings.QDRANT_PORT,
-        }
-        if settings.QDRANT_API_KEY:
-            kwargs["api_key"] = settings.QDRANT_API_KEY
-        _client = QdrantClient(**kwargs)
-        logger.info(
-            "Qdrant client connected to %s:%s",
-            settings.QDRANT_HOST,
-            settings.QDRANT_PORT,
-        )
+        if settings.QDRANT_URL:
+            # ── Cloud mode (Qdrant Cloud / any hosted instance) ──────────────
+            _client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+            )
+            logger.info("Qdrant client connected (cloud) → %s", settings.QDRANT_URL)
+        else:
+            # ── Local mode (Docker Compose / bare metal) ─────────────────────
+            kwargs: dict[str, Any] = {
+                "host": settings.QDRANT_HOST,
+                "port": settings.QDRANT_PORT,
+            }
+            if settings.QDRANT_API_KEY:
+                kwargs["api_key"] = settings.QDRANT_API_KEY
+            _client = QdrantClient(**kwargs)
+            logger.info(
+                "Qdrant client connected (local) → %s:%s",
+                settings.QDRANT_HOST,
+                settings.QDRANT_PORT,
+            )
     return _client
 
 

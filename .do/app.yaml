@@ -1,0 +1,50 @@
+# Digital Ocean App Platform specification
+# Deploy via: doctl apps create --spec .do/app.yaml
+# Or paste this into the DO App Platform UI (App Spec editor)
+#
+# Prerequisites:
+#   - A Qdrant Cloud instance (https://cloud.qdrant.io) — free tier is plenty to start
+#   - Your GitHub repo connected to DO App Platform
+
+name: orpheus
+region: nyc # Change to: ams (Amsterdam), sfo (San Francisco), sgp (Singapore), etc.
+
+services:
+  - name: api
+    github:
+      repo: mrYamusa/Orpheus
+      branch: main
+      deploy_on_push: true # auto-deploy on every push to main
+    dockerfile_path: Dockerfile
+    http_port: 8000
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb # $12/mo — upgrade when you need more
+
+    # Health check — DO will restart the container if this fails
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 30
+      failure_threshold: 3
+
+    envs:
+      # ── Qdrant Cloud ──────────────────────────────────────────────────────
+      - key: QDRANT_URL
+        value: "YOUR_QDRANT_CLOUD_URL" # e.g. https://abc123.us-east-1-0.aws.cloud.qdrant.io
+        type: SECRET
+      - key: QDRANT_API_KEY
+        value: "YOUR_QDRANT_API_KEY"
+        type: SECRET
+      - key: QDRANT_COLLECTION
+        value: orpheus_songs
+      - key: FRAME_COLLECTION
+        value: orpheus_frames
+
+      # ── Ingestion scheduler ───────────────────────────────────────────────
+      - key: SONGS_PER_RUN
+        value: "2"
+      - key: SCHEDULE_HOURS
+        value: "3"
+
+      # ── ffmpeg (bundled in the Docker image via apt — path is /usr/bin/ffmpeg) ──
+      # No FFMPEG_PATH needed — the Dockerfile installs ffmpeg system-wide

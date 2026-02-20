@@ -9,11 +9,18 @@ load_dotenv()
 
 
 class Settings:
-    # Qdrant
+    # ── Qdrant ────────────────────────────────────────────────────────────────
+    # Cloud mode  : set QDRANT_URL (e.g. https://xyz.qdrant.io) + QDRANT_API_KEY
+    # Local mode  : set QDRANT_HOST + QDRANT_PORT (default: localhost:6333)
+    QDRANT_URL: str | None = os.getenv("QDRANT_URL")  # Qdrant Cloud URL
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
     QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "orpheus_songs")
     QDRANT_API_KEY: str | None = os.getenv("QDRANT_API_KEY")
+
+    # ── Server ────────────────────────────────────────────────────────────────
+    # Heroku and DO App Platform inject PORT at runtime
+    PORT: int = int(os.getenv("PORT", "8000"))
 
     # Ingestion scheduler
     SONGS_PER_RUN: int = int(os.getenv("SONGS_PER_RUN", "2"))

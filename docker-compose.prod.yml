@@ -1,0 +1,46 @@
+# Production Docker Compose override for a Digital Ocean Droplet.
+#
+# Usage on the Droplet:
+#   git clone https://github.com/mrYamusa/Orpheus.git && cd Orpheus
+#   cp .env.example .env    # fill in real values
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# This file overrides the base docker-compose.yml with production settings:
+#   - Removes --reload from uvicorn
+#   - Sets restart policies
+#   - Configures Qdrant with a persistent named volume
+
+services:
+  qdrant:
+    restart: always
+    # Lock to a specific version in production — never use :latest in prod
+    image: qdrant/qdrant:v1.13.4
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # Bind only to localhost — Nginx/Caddy terminates TLS externally
+    # Remove the ports section if you don't need direct Qdrant access
+    ports:
+      - "127.0.0.1:6333:6333"
+
+  orpheus:
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Worker count = (2 x CPU cores) + 1  — adjust for your Droplet size
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 3
+      --no-access-log
+    ports:
+      - "8000:8000"
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+    depends_on:
+      - qdrant
+
+volumes:
+  qdrant_data:
