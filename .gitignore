@@ -1,0 +1,72 @@
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+*.whl
+.Python
+
+# ── Virtual environment ───────────────────────────────────────
+orpheus_env/
+venv/
+.venv/
+env/
+
+# ── Environment / secrets ─────────────────────────────────────
+.env
+!.env.example
+
+# ── Scratch / temp audio ──────────────────────────────────────
+scratch/
+
+# ── Qdrant local storage (if running without Docker) ──────────
+qdrant_storage/
+
+# ── Audio / media files ───────────────────────────────────────
+*.mp3
+*.mp4
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.webm
+*.aac
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Mypy / type checkers ─────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+
+# ── pytest ───────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+
+# ── Docker ───────────────────────────────────────────────────
+# keep docker-compose.yml and Dockerfile tracked
+# ignore override files with local secrets
+docker-compose.override.yml
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Misc ─────────────────────────────────────────────────────
+bash.exe.stackdump
