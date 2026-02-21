@@ -1,15 +1,17 @@
 """
 Spotify integration via Spotipy (Client Credentials flow — no user login).
 
-Pulls trending tracks from Spotify categories / featured playlists and
-enriches them with Spotify audio features so they can be stored alongside
-the locally-extracted librosa + VibeNet features in Qdrant.
+Pulls tracks via Spotify Recommendations (seed-by-genre) — the only stable
+discovery endpoint after Spotify removed Browse/Categories and
+Featured-Playlists in November 2024.  audio-features was also deprecated at
+that time; we attempt it but silently no-op on 403/404 so the pipeline never
+crashes.
 
 Public API
 ──────────
   get_trending_by_category(category_id, limit)  → list[SpotifyTrack]
   get_featured_tracks(limit)                    → list[SpotifyTrack]
-  SPOTIFY_CATEGORIES                            → dict of category slugs
+  SPOTIFY_CATEGORIES                            → dict of category slugs → label
 
 SpotifyTrack carries enough info to:
   1. Search YouTube for the audio: track.youtube_query
@@ -175,7 +177,13 @@ def _enrich_with_audio_features(
     sp: spotipy.Spotify,
     tracks: list[SpotifyTrack],
 ) -> None:
-    """Fetch Spotify audio features in batches of 100 and attach to tracks."""
+    """
+    Fetch Spotify audio features in batches of 100 and attach to tracks.
+
+    ``GET /audio-features`` was deprecated November 27 2024.  This function
+    silently no-ops on 403/404 so the pipeline never crashes — SpotifyTrack
+    will simply carry the default zero-valued SpotifyAudioFeatures.
+    """
     ids = [t.spotify_id for t in tracks]
     for i in range(0, len(ids), 100):
         batch_ids = ids[i : i + 100]
@@ -183,32 +191,54 @@ def _enrich_with_audio_features(
             raw_list = sp.audio_features(batch_ids) or []
             feat_map: dict[str, dict] = {f["id"]: f for f in raw_list if f}
         except Exception as exc:
-            logger.warning("Spotify audio_features batch failed: %s", exc)
-            feat_map = {}
+            # 403 = deprecated, 404 = gone — either way skip silently
+            logger.debug("Spotify audio_features unavailable (skipping): %s", exc)
+            return
         for track in tracks[i : i + 100]:
             track.audio_features = _parse_audio_features(feat_map.get(track.spotify_id))
 
 
 # ──────────────────────── Category catalogue ──────────────────────────────────
 
-# Spotify Browse Category IDs → human label.
-# Use the ID as the key when calling get_trending_by_category().
+# Human-readable labels for each category slug used in config.SPOTIFY_CATEGORY_POOL.
 SPOTIFY_CATEGORIES: dict[str, str] = {
-    "hiphop": "Hip-Hop",
-    "pop": "Pop",
-    "rnb": "R&B",
-    "latin": "Latin",
+    "hiphop":    "Hip-Hop",
+    "pop":       "Pop",
+    "rnb":       "R&B",
+    "latin":     "Latin",
     "edm_dance": "Electronic / Dance",
-    "rock": "Rock",
-    "afro": "Afrobeats",
+    "rock":      "Rock",
+    "afro":      "Afrobeats",
     "indie_alt": "Indie / Alternative",
-    "soul": "Soul",
-    "workout": "Workout",
-    "party": "Party",
-    "chill": "Chill",
-    "romance": "Romance",
-    "mood": "Mood",
+    "soul":      "Soul",
+    "workout":   "Workout",
+    "party":     "Party",
+    "chill":     "Chill",
+    "romance":   "Romance",
+    "mood":      "Mood",
 }
+
+# Map our category slugs to valid Spotify Recommendations seed_genres.
+# See: GET /recommendations/available-genre-seeds
+_GENRE_SEEDS: dict[str, list[str]] = {
+    "hiphop":    ["hip-hop"],
+    "pop":       ["pop"],
+    "rnb":       ["r-n-b"],
+    "latin":     ["latin"],
+    "edm_dance": ["edm", "dance"],
+    "rock":      ["rock"],
+    "afro":      ["afrobeat"],
+    "indie_alt": ["indie", "alternative"],
+    "soul":      ["soul"],
+    "workout":   ["work-out"],
+    "party":     ["party"],
+    "chill":     ["chill"],
+    "romance":   ["romance"],
+    "mood":      ["pop", "soul"],  # no direct 'mood' seed — use broad mix
+}
+
+# Pool used when a category has no specific seed or for the featured fallback.
+_FEATURED_SEEDS = ["pop", "hip-hop", "r-n-b", "latin", "rock"]
 
 
 # ──────────────────────── Public API ──────────────────────────────────────────
@@ -220,45 +250,34 @@ def get_trending_by_category(
     country: str = "US",
 ) -> list[SpotifyTrack]:
     """
-    Return trending tracks from a Spotify browse category.
+    Return trending tracks for a genre category using Spotify Recommendations.
 
-    Picks one playlist at random from the category's top-3 playlists for
-    variety, then pulls `limit` tracks and enriches them with audio features.
+    Uses ``sp.recommendations(seed_genres=[...], limit=limit*2)`` which is the
+    stable endpoint after Spotify removed Browse/Categories in November 2024.
     Falls back to an empty list on any API error (caller handles the fallback).
     """
     sp = _get_client()
+    seeds = _GENRE_SEEDS.get(category_id, ["pop"])
 
-    # ── 1. Get playlists for the category ─────────────────────────────────────
+    # ── 1. Fetch recommendations ───────────────────────────────────────────────
     try:
-        resp = sp.category_playlists(category_id=category_id, country=country, limit=3)
-        playlist_items = (resp.get("playlists") or {}).get("items") or []
-        if not playlist_items:
-            logger.warning("No playlists for Spotify category '%s'", category_id)
-            return []
-        playlist = random.choice(playlist_items)
-    except Exception as exc:
-        logger.error("Spotify category_playlists failed for '%s': %s", category_id, exc)
-        return []
-
-    # ── 2. Pull tracks from the playlist ──────────────────────────────────────
-    try:
-        result = sp.playlist_tracks(
-            playlist["id"],
-            fields=(
-                "items(track(id,name,artists,album,external_urls,"
-                "preview_url,popularity,duration_ms))"
-            ),
-            limit=min(limit * 2, 50),
+        resp = sp.recommendations(
+            seed_genres=seeds[:5],      # API max 5 seeds total
+            limit=min(limit * 2, 100),
+            country=country,
         )
-        raw_items = (result or {}).get("items") or []
+        raw_tracks = (resp or {}).get("tracks") or []
     except Exception as exc:
-        logger.error("Spotify playlist_tracks failed: %s", exc)
+        logger.error(
+            "Spotify recommendations failed for category '%s' (seeds=%s): %s",
+            category_id, seeds, exc,
+        )
         return []
 
-    # ── 3. Parse (skip None / local-file entries) ──────────────────────────────
+    # ── 2. Parse ───────────────────────────────────────────────────────────────
     tracks: list[SpotifyTrack] = []
-    for item in raw_items:
-        t = _parse_track_item(item)
+    for item in raw_tracks:
+        t = _parse_track_item(item)  # recommendations items are plain track dicts
         if t and t.duration_ms > 0:
             t.genres = [SPOTIFY_CATEGORIES.get(category_id, category_id)]
             tracks.append(t)
@@ -266,47 +285,41 @@ def get_trending_by_category(
             break
 
     if not tracks:
+        logger.warning("No tracks returned for Spotify category '%s'", category_id)
         return []
 
-    # ── 4. Enrich with audio features ─────────────────────────────────────────
+    # ── 3. Optionally enrich with audio features (best-effort) ─────────────────
     _enrich_with_audio_features(sp, tracks)
 
     logger.info(
-        "Spotify: fetched %d tracks from category '%s' (playlist: '%s')",
-        len(tracks),
-        category_id,
-        playlist.get("name", ""),
+        "Spotify recommendations: %d tracks for category '%s' (seeds=%s)",
+        len(tracks), category_id, seeds,
     )
     return tracks
 
 
 def get_featured_tracks(limit: int = 20, country: str = "US") -> list[SpotifyTrack]:
     """
-    Pull tracks from Spotify's global featured playlists.
-    Good fallback when SPOTIFY_CATEGORY_POOL is empty or an API call fails.
+    Pull a diverse cross-genre set of tracks via Spotify Recommendations.
+    Used as a fallback when SPOTIFY_CATEGORY_POOL is empty or a category call fails.
     """
     sp = _get_client()
+    # Pick 2 random seeds from the featured pool for variety
+    seeds = random.sample(_FEATURED_SEEDS, k=min(2, len(_FEATURED_SEEDS)))
+
     try:
-        featured = sp.featured_playlists(country=country, limit=5)
-        playlists = (featured.get("playlists") or {}).get("items") or []
-        if not playlists:
-            return []
-        playlist = random.choice(playlists)
-        result = sp.playlist_tracks(
-            playlist["id"],
-            fields=(
-                "items(track(id,name,artists,album,external_urls,"
-                "preview_url,popularity,duration_ms))"
-            ),
-            limit=min(limit * 2, 50),
+        resp = sp.recommendations(
+            seed_genres=seeds,
+            limit=min(limit * 2, 100),
+            country=country,
         )
-        raw_items = (result or {}).get("items") or []
+        raw_tracks = (resp or {}).get("tracks") or []
     except Exception as exc:
-        logger.error("Spotify featured_playlists failed: %s", exc)
+        logger.error("Spotify featured recommendations failed: %s", exc)
         return []
 
     tracks: list[SpotifyTrack] = []
-    for item in raw_items:
+    for item in raw_tracks:
         t = _parse_track_item(item)
         if t and t.duration_ms > 0:
             t.genres = ["featured"]
@@ -318,5 +331,5 @@ def get_featured_tracks(limit: int = 20, country: str = "US") -> list[SpotifyTra
         return []
 
     _enrich_with_audio_features(sp, tracks)
-    logger.info("Spotify: fetched %d featured tracks", len(tracks))
+    logger.info("Spotify featured: fetched %d tracks (seeds=%s)", len(tracks), seeds)
     return tracks
