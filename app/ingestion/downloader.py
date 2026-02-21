@@ -28,9 +28,34 @@ class VideoMeta:
     webpage_url: str
 
 
+# YouTube client rotation: android/ios bypass the "sign in to confirm" block
+# that Heroku/cloud datacenter IPs trigger on the web client.
+_YT_PLAYER_CLIENTS = ["android", "ios", "web"]
+
+
+def _base_ydl_opts() -> dict:
+    """Common yt-dlp options shared by search and download."""
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        # Use android client first — avoids bot-check on datacenter IPs.
+        # yt-dlp tries each client in order until one succeeds.
+        "extractor_args": {
+            "youtube": {
+                "player_client": _YT_PLAYER_CLIENTS,
+            }
+        },
+        # Small polite delay between requests
+        "sleep_interval_requests": 1,
+    }
+    return opts
+
+
 def _build_ydl_opts(output_template: str) -> dict:
-    """Base yt-dlp options for audio-only mp3 download."""
-    opts = {
+    """yt-dlp options for audio-only mp3 download."""
+    opts = _base_ydl_opts()
+    opts.update({
         "format": "bestaudio/best",
         "postprocessors": [
             {
@@ -40,12 +65,9 @@ def _build_ydl_opts(output_template: str) -> dict:
             }
         ],
         "outtmpl": output_template,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
         # Skip videos longer than 10 minutes (likely not songs)
         "match_filter": yt_dlp.utils.match_filter_func("duration < 600"),
-    }
+    })
     # Allow users to override ffmpeg location via env var
     ffmpeg = os.getenv("FFMPEG_PATH")
     if ffmpeg:
@@ -66,13 +88,19 @@ def _info_to_meta(info: dict) -> VideoMeta:
 def _yt_search_sync(query: str, max_results: int) -> list[VideoMeta]:
     """
     Run a YouTube search without downloading anything.
-    Returns up to max_results VideoMeta objects.
+    Returns up to max_results VideoMeta objects, or [] on any error.
     """
     search_query = f"ytsearch{max_results}:{query}"
-    with yt_dlp.YoutubeDL(
-        {"quiet": True, "no_warnings": True, "noplaylist": True}
-    ) as ydl:
-        info = ydl.extract_info(search_query, download=False)
+    opts = _base_ydl_opts()
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_query, download=False)
+    except yt_dlp.utils.DownloadError as exc:
+        logger.warning("YouTube search failed (will skip): %s", exc)
+        return []
+    except Exception as exc:
+        logger.warning("YouTube search unexpected error (will skip): %s", exc)
+        return []
     entries = (info or {}).get("entries") or []
     results = []
     for entry in entries:
@@ -91,8 +119,11 @@ def _yt_download_sync(video_id: str, dest_dir: Path) -> tuple[Path, VideoMeta]:
     output_template = str(dest_dir / f"{video_id}.%(ext)s")
     opts = _build_ydl_opts(output_template)
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as exc:
+        raise RuntimeError(f"YouTube download blocked/failed for {video_id}: {exc}") from exc
 
     meta = _info_to_meta(info or {})
     mp3_path = dest_dir / f"{video_id}.mp3"
