@@ -60,6 +60,13 @@ def _get_cookie_file() -> str | None:
     try:
         cookie_path = "/tmp/yt_cookies.txt"
         decoded = base64.b64decode(raw)
+        if len(decoded) < 20 or not decoded.lstrip().startswith(b"# Netscape"):
+            logger.warning(
+                "YT_COOKIES_B64 decoded to %d bytes but does not look like a "
+                "Netscape cookie file — ignoring. Re-export and re-set it.",
+                len(decoded),
+            )
+            return None
         Path(cookie_path).write_bytes(decoded)
         logger.info(
             "YouTube cookies written to %s (%d bytes)", cookie_path, len(decoded)
