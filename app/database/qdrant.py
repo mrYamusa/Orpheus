@@ -94,21 +94,38 @@ def upsert_song(
     spectral_bandwidth_mean: float,
     spectral_rolloff_mean: float,
     zcr_mean: float,
-    mfcc_means: list[float],
+    # New spectral features
+    spectral_flux_mean: float = 0.0,
+    spectral_flux_std: float = 0.0,
+    harmonic_ratio: float = 0.0,
+    mfcc_means: list[float] | None = None,
+    instrument_profile: dict | None = None,
+    # Spotify fields (optional — only set when ingested via Spotify source)
+    spotify_id: str | None = None,
+    spotify_url: str | None = None,
+    spotify_preview_url: str | None = None,
+    album: str | None = None,
+    genres: list[str] | None = None,
+    popularity: int | None = None,
+    cover_url: str | None = None,
+    spotify_audio_features: dict | None = None,
 ) -> str:
     """Insert or update a single song point. Returns the point UUID."""
     client = get_client()
     point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"yt:{youtube_id}"))
 
-    payload = {
+    payload: dict[str, Any] = {
+        # ── Identity ──────────────────────────────────────────────────────────
         "title": title,
         "artist": artist,
         "youtube_id": youtube_id,
+        "youtube_url": f"https://www.youtube.com/watch?v={youtube_id}",
         "duration_s": duration_s,
+        # ── Tempo / key ───────────────────────────────────────────────────────
         "tempo_bpm": tempo_bpm,
         "key": key,
         "mode": mode,
-        # VibeNet features (stored for payload filtering)
+        # ── VibeNet features ──────────────────────────────────────────────────
         "acousticness": acousticness,
         "danceability": danceability,
         "energy": energy,
@@ -116,14 +133,30 @@ def upsert_song(
         "liveness": liveness,
         "speechiness": speechiness,
         "valence": valence,
-        # Librosa scalars
+        # ── Librosa scalars ───────────────────────────────────────────────────
         "rms_mean": rms_mean,
         "spectral_centroid_mean": spectral_centroid_mean,
         "spectral_bandwidth_mean": spectral_bandwidth_mean,
         "spectral_rolloff_mean": spectral_rolloff_mean,
         "zcr_mean": zcr_mean,
-        "mfcc_means": mfcc_means,
+        # ── New spectral features ─────────────────────────────────────────────
+        "spectral_flux_mean": spectral_flux_mean,
+        "spectral_flux_std": spectral_flux_std,
+        "harmonic_ratio": harmonic_ratio,
+        "mfcc_means": mfcc_means or [],
+        "instrument_profile": instrument_profile or {},
     }
+
+    # ── Spotify sub-payload (only added when available) ───────────────────────
+    if spotify_id:
+        payload["spotify_id"] = spotify_id
+        payload["spotify_url"] = spotify_url or ""
+        payload["spotify_preview_url"] = spotify_preview_url
+        payload["album"] = album or ""
+        payload["genres"] = genres or []
+        payload["popularity"] = popularity or 0
+        payload["cover_url"] = cover_url
+        payload["spotify_audio_features"] = spotify_audio_features or {}
 
     client.upsert(
         collection_name=settings.QDRANT_COLLECTION,
@@ -135,7 +168,7 @@ def upsert_song(
             )
         ],
     )
-    logger.info("Upserted song '%s – %s' (id=%s)", artist, title, point_id)
+    logger.info("Upserted song '%s \u2013 %s' (id=%s)", artist, title, point_id)
     return point_id
 
 

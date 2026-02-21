@@ -40,15 +40,15 @@ def get_scheduler() -> AsyncIOScheduler:
         _scheduler = AsyncIOScheduler(timezone="UTC")
         _scheduler.add_job(
             _ingestion_job,
-            trigger=IntervalTrigger(hours=settings.SCHEDULE_HOURS),
+            trigger=IntervalTrigger(minutes=settings.SCHEDULE_MINUTES),
             id="ingestion_job",
-            name=f"Ingest {settings.SONGS_PER_RUN} songs every {settings.SCHEDULE_HOURS}h",
+            name=f"Ingest {settings.SONGS_PER_RUN} songs every {settings.SCHEDULE_MINUTES}min",
             replace_existing=True,
-            misfire_grace_time=60 * 10,  # 10-minute grace window
+            misfire_grace_time=60 * 5,  # 5-minute grace window
         )
         logger.info(
-            "Scheduler configured: every %d hour(s), %d song(s) per run.",
-            settings.SCHEDULE_HOURS,
+            "Scheduler configured: every %d min, %d song(s) per run.",
+            settings.SCHEDULE_MINUTES,
             settings.SONGS_PER_RUN,
         )
     return _scheduler

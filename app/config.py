@@ -12,67 +12,83 @@ class Settings:
     # ── Qdrant ────────────────────────────────────────────────────────────────
     # Cloud mode  : set QDRANT_URL (e.g. https://xyz.qdrant.io) + QDRANT_API_KEY
     # Local mode  : set QDRANT_HOST + QDRANT_PORT (default: localhost:6333)
-    QDRANT_URL: str | None = os.getenv("QDRANT_URL")  # Qdrant Cloud URL
+    QDRANT_URL: str | None = os.getenv("QDRANT_URL")
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
     QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "orpheus_songs")
     QDRANT_API_KEY: str | None = os.getenv("QDRANT_API_KEY")
 
     # ── Server ────────────────────────────────────────────────────────────────
-    # Heroku and DO App Platform inject PORT at runtime
     PORT: int = int(os.getenv("PORT", "8000"))
 
-    # Ingestion scheduler
-    SONGS_PER_RUN: int = int(os.getenv("SONGS_PER_RUN", "2"))
-    SCHEDULE_HOURS: int = int(os.getenv("SCHEDULE_HOURS", "3"))
+    # ── Ingestion ─────────────────────────────────────────────────────────────
+    # cron-job.org hits /scheduler/trigger every 15 min from outside.
+    # The in-process scheduler fires every SCHEDULE_MINUTES as a backup.
+    SONGS_PER_RUN: int = int(os.getenv("SONGS_PER_RUN", "4"))
+    SCHEDULE_MINUTES: int = int(os.getenv("SCHEDULE_MINUTES", "30"))
 
-    # Scratch directory for temporary audio files
+    # Scratch directory for temporary audio files (deleted after each run)
     SCRATCH_DIR: Path = Path(os.getenv("SCRATCH_DIR", "./scratch"))
 
-    # Song embedding vector dimensions (must stay in sync with extractor.py)
-    EMBEDDING_DIM: int = 28  # 7 vibenet + 8 librosa scalars + 13 mfcc means
+    # ── Embeddings ────────────────────────────────────────────────────────────
+    # Song-level: 7 VibeNet + 8 librosa scalars + 2 spectral (flux+harmonic) + 13 MFCCs
+    #   = 30 total  (must stay in sync with extractor.py SongFeatures)
+    EMBEDDING_DIM: int = 30
 
-    # Frame-level (snippet matching) collection
+    # Frame-level (Shazam-style snippet matching):
+    #   13 MFCCs + 12 chroma + 5 spectral scalars + 1 flux + 1 harmonic = 32
     FRAME_COLLECTION: str = os.getenv("FRAME_COLLECTION", "orpheus_frames")
-    # 13 MFCCs + 12 chroma bins + 5 scalars (rms, zcr, centroid, bandwidth, rolloff)
-    FRAME_EMBEDDING_DIM: int = 30
+    FRAME_EMBEDDING_DIM: int = 32
     FRAME_WINDOW_S: float = 5.0  # seconds per analysis window
-    FRAME_HOP_S: float = 2.5  # hop between window starts (50% overlap)
+    FRAME_HOP_S: float = 2.5  # hop between window starts (50 % overlap)
 
-    # Pool of YouTube search queries used by the background ingestion job.
-    # Queries are randomly sampled from this list each run so the library
-    # grows across many genres and moods over time.
+    # ── Spotify (primary song source) ─────────────────────────────────────────
+    # Get credentials at https://developer.spotify.com/dashboard
+    # If not set the pipeline falls back to the YouTube query pool below.
+    SPOTIFY_CLIENT_ID: str | None = os.getenv("SPOTIFY_CLIENT_ID")
+    SPOTIFY_CLIENT_SECRET: str | None = os.getenv("SPOTIFY_CLIENT_SECRET")
+    SPOTIFY_COUNTRY: str = os.getenv("SPOTIFY_COUNTRY", "US")
+
+    # Spotify category IDs to rotate through each run.
+    # See app/ingestion/spotify_client.py → SPOTIFY_CATEGORIES for the full list.
+    SPOTIFY_CATEGORY_POOL: list[str] = [
+        "hiphop",
+        "pop",
+        "rnb",
+        "latin",
+        "edm_dance",
+        "rock",
+        "afro",
+        "indie_alt",
+        "soul",
+        "workout",
+        "party",
+        "chill",
+        "romance",
+        "mood",
+    ]
+
+    # ── YouTube fallback query pool ────────────────────────────────────────────
+    # Used when Spotify credentials are not configured.
     YOUTUBE_QUERY_POOL: list[str] = [
-        # Hip-hop / Trap
-        "trap hip hop 2024 popular",
-        "best new drill rap 2024",
-        "underground hip hop chill 2024",
+        "trap hip hop 2025 popular",
+        "best new drill rap 2025",
         "melodic rap hits 2025",
-        # Pop
         "pop hits 2025 official audio",
-        "indie pop song 2024",
-        "dark pop aesthetic 2024",
-        # Electronic / Dance
-        "deep house music mix",
-        "future bass electronic 2024",
+        "dark pop aesthetic 2025",
+        "deep house music mix 2025",
+        "future bass electronic 2025",
         "lo fi hip hop chill beats",
-        "phonk drift music 2024",
-        "afrobeats hit song 2024",
-        # Alternative / Rock
-        "alternative rock indie 2024",
-        "bedroom pop dreamy 2024",
-        # R&B / Soul
-        "rnb love song 2024",
-        "neo soul smooth 2024",
-        "afro soul hit 2024",
-        # Latin / World
-        "reggaeton hit 2024",
-        "latin pop 2025 oficial",
-        # Mood-based
-        "sad emotional music 2024",
-        "hype workout music 2024",
-        "late night vibe song 2024",
-        "happy feel good song 2024",
+        "phonk drift music 2025",
+        "afrobeats hit song 2025",
+        "alternative rock indie 2025",
+        "rnb love song 2025",
+        "neo soul smooth 2025",
+        "reggaeton hit 2025",
+        "sad emotional music 2025",
+        "hype workout music 2025",
+        "late night vibe song 2025",
+        "happy feel good song 2025",
     ]
 
 

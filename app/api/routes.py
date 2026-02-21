@@ -71,8 +71,11 @@ async def scheduler_status():
     return {
         "running": sched.running,
         "next_run": str(job.next_run_time),
-        "schedule": f"every {settings.SCHEDULE_HOURS} hour(s)",
+        "schedule": f"every {settings.SCHEDULE_MINUTES} minute(s)",
         "songs_per_run": settings.SONGS_PER_RUN,
+        "source": "spotify"
+        if (settings.SPOTIFY_CLIENT_ID and settings.SPOTIFY_CLIENT_SECRET)
+        else "youtube",
     }
 
 
@@ -150,12 +153,11 @@ class SearchRequest(BaseModel):
 
 def _build_query_vector(req: SearchRequest) -> list[float]:
     """
-    Convert the SearchRequest into a 28-dim query vector.
+    Convert the SearchRequest into a 30-dim query vector.
     Missing vibe values default to 0.5 (neutral / "don't care").
-    Librosa dimensions default to neutral midpoints.
+    Librosa + new spectral dimensions default to neutral midpoints.
     """
     neutral = 0.5
-
     vibe_dims = [
         req.acousticness if req.acousticness is not None else neutral,
         req.danceability if req.danceability is not None else neutral,
@@ -165,13 +167,9 @@ def _build_query_vector(req: SearchRequest) -> list[float]:
         req.speechiness if req.speechiness is not None else neutral,
         req.valence if req.valence is not None else neutral,
     ]
-
-    # For librosa dims we can't know user intent so use neutral midpoints
-    librosa_dims = [neutral] * 8  # tempo, key, mode, rms, centroid, bw, rolloff, zcr
-
-    # For MFCCs also neutral (0.5 after tanh squash means raw value ≈ 0)
-    mfcc_dims = [neutral] * 13
-
+    # tempo, key, mode, rms, centroid, bw, rolloff, zcr, flux, harmonic_ratio
+    librosa_dims = [neutral] * 10
+    mfcc_dims = [neutral] * 13  # 13 MFCCs (tanh-squashed 0.5 ≈ raw 0)
     return vibe_dims + librosa_dims + mfcc_dims
 
 
@@ -210,8 +208,8 @@ async def search(req: SearchRequest):
     """
     Semantic song search.
 
-    Send a structured JSON produced by your LLM (from voice transcription)
-    and get back a ranked playlist of matching songs from the library.
+    Returns a ranked playlist.  Each entry includes Spotify and YouTube
+    links, a mood sub-object, and the instrument profile.
     """
     query_vector = _build_query_vector(req)
     filters = _build_filters(req)
@@ -221,9 +219,54 @@ async def search(req: SearchRequest):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Search failed: {exc}") from exc
 
+    playlist = []
+    for rank, hit in enumerate(results, start=1):
+        youtube_id = hit.get("youtube_id", "")
+        key = hit.get("key", "")
+        mode = hit.get("mode", "")
+        playlist.append(
+            {
+                "rank": rank,
+                "score": round(hit.get("score", 0), 4),
+                "title": hit.get("title"),
+                "artist": hit.get("artist"),
+                "album": hit.get("album"),
+                "genres": hit.get("genres", []),
+                "duration_s": hit.get("duration_s"),
+                "tempo_bpm": hit.get("tempo_bpm"),
+                "key": f"{key} {mode}".strip() if key else None,
+                "mood": {
+                    "energy": hit.get("energy"),
+                    "valence": hit.get("valence"),
+                    "danceability": hit.get("danceability"),
+                    "acousticness": hit.get("acousticness"),
+                    "instrumentalness": hit.get("instrumentalness"),
+                    "speechiness": hit.get("speechiness"),
+                    "liveness": hit.get("liveness"),
+                },
+                "links": {
+                    "youtube": f"https://www.youtube.com/watch?v={youtube_id}"
+                    if youtube_id
+                    else None,
+                    "spotify": hit.get("spotify_url"),
+                    "spotify_preview": hit.get("spotify_preview_url"),
+                },
+                "cover_url": hit.get("cover_url"),
+                "instrument_profile": hit.get("instrument_profile", {}),
+                "spectral": {
+                    "spectral_flux_mean": hit.get("spectral_flux_mean"),
+                    "harmonic_ratio": hit.get("harmonic_ratio"),
+                    "spectral_centroid": hit.get("spectral_centroid_mean"),
+                    "spectral_rolloff": hit.get("spectral_rolloff_mean"),
+                    "zcr": hit.get("zcr_mean"),
+                },
+                "spotify_audio_features": hit.get("spotify_audio_features"),
+            }
+        )
+
     return {
-        "count": len(results),
-        "playlist": results,
+        "count": len(playlist),
+        "playlist": playlist,
     }
 
 
@@ -291,6 +334,12 @@ async def match_snippet(
             "title": best.get("title"),
             "artist": best.get("artist"),
             "youtube_id": best.get("youtube_id"),
+            "links": {
+                "youtube": "https://www.youtube.com/watch?v="
+                + best.get("youtube_id", ""),
+                "spotify": best.get("spotify_url"),
+                "spotify_preview": best.get("spotify_preview_url"),
+            },
             "heard_at": {
                 "start_s": best.get("timestamp_start"),
                 "end_s": best.get("timestamp_end"),
@@ -304,12 +353,17 @@ async def match_snippet(
         # we build a neutral song vector and use payload filters instead.
         similar: list[dict] = []
         if len(ranked) > 1:
-            # Other songs found in frame search are already "similar" by acoustic features
             similar = [
                 {
                     "title": r.get("title"),
                     "artist": r.get("artist"),
                     "youtube_id": r.get("youtube_id"),
+                    "links": {
+                        "youtube": "https://www.youtube.com/watch?v="
+                        + r.get("youtube_id", ""),
+                        "spotify": r.get("spotify_url"),
+                        "spotify_preview": r.get("spotify_preview_url"),
+                    },
                     "score": round(r["score"], 4),
                 }
                 for r in ranked[1 : similar_limit + 1]
