@@ -83,7 +83,7 @@ def _common_ydl_opts() -> dict:
     # yt-dlp 2025+ requires a JavaScript runtime to decode YouTube cipher
     # signatures.  Only 'deno' is enabled by default; we explicitly enable
     # 'nodejs' which is installed in the Docker container.
-    opts["js_runtimes"] = "nodejs"
+    opts["js_runtimes"] = {"nodejs": {}}
     cookie_file = _get_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
