@@ -47,7 +47,7 @@ def _base_ydl_opts() -> dict:
             }
         },
         # Small polite delay between requests
-        "sleep_interval_requests": 1,
+        "sleep_interval_requests": 15,
     }
     return opts
 
@@ -55,19 +55,21 @@ def _base_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _base_ydl_opts()
-    opts.update({
-        "format": "bestaudio/best",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-        "outtmpl": output_template,
-        # Skip videos longer than 10 minutes (likely not songs)
-        "match_filter": yt_dlp.utils.match_filter_func("duration < 600"),
-    })
+    opts.update(
+        {
+            "format": "bestaudio/best",
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+            "outtmpl": output_template,
+            # Skip videos longer than 10 minutes (likely not songs)
+            "match_filter": yt_dlp.utils.match_filter_func("duration < 600"),
+        }
+    )
     # Allow users to override ffmpeg location via env var
     ffmpeg = os.getenv("FFMPEG_PATH")
     if ffmpeg:
@@ -123,7 +125,9 @@ def _yt_download_sync(video_id: str, dest_dir: Path) -> tuple[Path, VideoMeta]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as exc:
-        raise RuntimeError(f"YouTube download blocked/failed for {video_id}: {exc}") from exc
+        raise RuntimeError(
+            f"YouTube download blocked/failed for {video_id}: {exc}"
+        ) from exc
 
     meta = _info_to_meta(info or {})
     mp3_path = dest_dir / f"{video_id}.mp3"
