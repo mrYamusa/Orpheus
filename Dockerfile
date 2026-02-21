@@ -6,14 +6,7 @@ FROM python:3.11-slim
 #          (enabled by default, no --js-runtimes flag needed)
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
-    && python -c "
-import urllib.request, zipfile, os
-url = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip'
-urllib.request.urlretrieve(url, '/tmp/deno.zip')
-with zipfile.ZipFile('/tmp/deno.zip') as z:
-    z.extractall('/usr/local/bin/')
-os.chmod('/usr/local/bin/deno', 0o755)
-os.remove('/tmp/deno.zip')" \
+    && python -c "import urllib.request,zipfile,os;urllib.request.urlretrieve('https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip','/tmp/deno.zip');z=zipfile.ZipFile('/tmp/deno.zip');z.extractall('/usr/local/bin/');z.close();os.chmod('/usr/local/bin/deno',0o755);os.remove('/tmp/deno.zip')" \
     && deno --version
 
 WORKDIR /app
