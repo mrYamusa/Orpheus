@@ -94,11 +94,14 @@ def _search_ydl_opts() -> dict:
     """
     yt-dlp options for metadata-only search (ytsearch: queries).
 
-    Does NOT override player_client — the default web client is fine for
-    search and avoids 'Requested format is not available' errors that the
-    android/ios clients trigger during format introspection.
+    extract_flat skips per-video format resolution entirely — we only need
+    the video ID, title, and duration from the search result metadata.
+    That also avoids 'Requested format is not available' errors that happen
+    when yt-dlp tries to resolve stream URLs for each result.
     """
-    return _common_ydl_opts()
+    opts = _common_ydl_opts()
+    opts["extract_flat"] = "in_playlist"
+    return opts
 
 
 def _build_ydl_opts(output_template: str) -> dict:
@@ -136,7 +139,8 @@ def _info_to_meta(info: dict) -> VideoMeta:
         title=info.get("track") or info.get("title", "Unknown Title"),
         artist=info.get("artist") or info.get("uploader", "Unknown Artist"),
         duration_s=float(info.get("duration") or 0),
-        webpage_url=info.get("webpage_url", ""),
+        # flat search results put the URL in 'url', full extraction uses 'webpage_url'
+        webpage_url=info.get("webpage_url") or info.get("url") or "",
     )
 
 
