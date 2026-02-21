@@ -9,6 +9,7 @@ Provides two operations:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -32,6 +33,42 @@ class VideoMeta:
 # that Heroku/cloud datacenter IPs trigger on the web client.
 _YT_PLAYER_CLIENTS = ["android", "ios", "web"]
 
+# Cached path to the decoded cookie file (None = not yet resolved)
+_cookie_file: str | None = None
+_cookie_resolved: bool = False
+
+
+def _get_cookie_file() -> str | None:
+    """
+    Decode $YT_COOKIES_B64 (base64-encoded cookies.txt) to /tmp/yt_cookies.txt
+    on first call and return the path.  Returns None if the env var is unset.
+
+    To set up:
+      1. Sign in to YouTube in your browser.
+      2. Export cookies.txt with a browser extension (Netscape format).
+      3. Base64-encode: python -c "import base64,sys; sys.stdout.write(base64.b64encode(open('cookies.txt','rb').read()).decode())"
+      4. heroku config:set YT_COOKIES_B64='<output>' --app orpheus-api
+    """
+    global _cookie_file, _cookie_resolved
+    if _cookie_resolved:
+        return _cookie_file
+    _cookie_resolved = True
+    raw = os.getenv("YT_COOKIES_B64", "").strip()
+    if not raw:
+        logger.debug("YT_COOKIES_B64 not set; running without YouTube cookies.")
+        return None
+    try:
+        cookie_path = "/tmp/yt_cookies.txt"
+        decoded = base64.b64decode(raw)
+        Path(cookie_path).write_bytes(decoded)
+        logger.info(
+            "YouTube cookies written to %s (%d bytes)", cookie_path, len(decoded)
+        )
+        _cookie_file = cookie_path
+    except Exception as exc:
+        logger.warning("Failed to decode YT_COOKIES_B64: %s", exc)
+    return _cookie_file
+
 
 def _base_ydl_opts() -> dict:
     """Common yt-dlp options shared by search and download."""
@@ -49,6 +86,9 @@ def _base_ydl_opts() -> dict:
         # Small polite delay between requests
         "sleep_interval_requests": 15,
     }
+    cookie_file = _get_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
     return opts
 
 
