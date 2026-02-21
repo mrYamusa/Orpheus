@@ -212,7 +212,7 @@ def _search_tracks(
             type="track",
             limit=safe_limit,
             offset=offset,
-            market=market,   # avoids sending market=None which causes 400s
+            market=market,  # avoids sending market=None which causes 400s
         )
         raw_items = ((resp or {}).get("tracks") or {}).get("items") or []
     except Exception as exc:
@@ -330,4 +330,3 @@ def get_featured_tracks(limit: int = 20, country: str = "US") -> list[SpotifyTra
     _enrich_with_audio_features(sp, tracks)
     logger.info("Spotify featured: %d tracks (q=%r)", len(tracks), query)
     return tracks
-
