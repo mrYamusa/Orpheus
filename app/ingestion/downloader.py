@@ -12,12 +12,29 @@ import asyncio
 import base64
 import logging
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import yt_dlp
 
 logger = logging.getLogger(__name__)
+
+# ── Node.js availability check (runs once at import time) ────────────
+_node_path = shutil.which("node")
+if _node_path:
+    try:
+        _node_ver = subprocess.check_output(
+            [_node_path, "--version"], text=True, timeout=5
+        ).strip()
+        logger.info("Node.js found: %s (%s)", _node_path, _node_ver)
+    except Exception as exc:
+        logger.warning("Node.js binary found at %s but failed: %s", _node_path, exc)
+        _node_ver = "unknown"
+else:
+    logger.warning("Node.js NOT found on PATH — yt-dlp cipher solving will fail")
+    _node_ver = None
 
 
 @dataclass
@@ -107,9 +124,11 @@ def _search_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _common_ydl_opts()
-    # With Node.js installed in the container and cookies authenticating the
-    # session, the default web client can resolve all YouTube stream URLs.
-    # No need for android_vr/ios hacks.
+    # Enable verbose yt-dlp output for downloads so we can diagnose
+    # format availability issues in Heroku logs.
+    opts["quiet"] = False
+    opts["no_warnings"] = False
+    opts["verbose"] = True
     opts.update(
         {
             "format": "bestaudio/best",
@@ -175,6 +194,19 @@ def _yt_download_sync(video_id: str, dest_dir: Path) -> tuple[Path, VideoMeta]:
     dest_dir.mkdir(parents=True, exist_ok=True)
     url = f"https://www.youtube.com/watch?v={video_id}"
     output_template = str(dest_dir / f"{video_id}.%(ext)s")
+
+    # ── Diagnostic: list available formats before attempting download ──
+    try:
+        list_opts = _common_ydl_opts()
+        list_opts["quiet"] = False
+        list_opts["no_warnings"] = False
+        list_opts["verbose"] = True
+        list_opts["listformats"] = True
+        with yt_dlp.YoutubeDL(list_opts) as ydl:
+            ydl.extract_info(url, download=False)
+    except Exception as exc:
+        logger.warning("Format listing failed for %s: %s", video_id, exc)
+
     opts = _build_ydl_opts(output_template)
 
     try:
