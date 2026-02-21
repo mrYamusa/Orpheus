@@ -196,23 +196,21 @@ def _search_tracks(
     market: str = "US",
 ) -> list[SpotifyTrack]:
     """
-    Run one ``sp.search`` call with a random page offset for variety and
-    return parsed SpotifyTrack objects.  Returns [] on any error.
+    Run one ``sp.search`` call (offset=0, no genre: filter) and return parsed
+    SpotifyTrack objects.  Returns [] on any error.
 
-    Spotify genre-search paging is capped much lower than the documented 1000;
-    keep offset ≤ 200 to stay inside the safe range.
+    Plain keyword queries always return a full 50-result page; variety comes
+    from rotating between multiple keyword variants per category rather than
+    using offset pagination (Spotify's genre-filter index is too small to page).
     """
     safe_limit = min(limit, 50)
-    # Keep offset low — genre queries have a much smaller index than general search
-    max_offset = max(0, min(200, 200 - safe_limit))
-    offset = random.randint(0, max_offset)
     try:
         resp = sp.search(
             q=query,
             type="track",
             limit=safe_limit,
-            offset=offset,
-            market=market,  # avoids sending market=None which causes 400s
+            offset=0,
+            market=market,
         )
         raw_items = ((resp or {}).get("tracks") or {}).get("items") or []
     except Exception as exc:
@@ -249,32 +247,118 @@ SPOTIFY_CATEGORIES: dict[str, str] = {
     "mood": "Mood",
 }
 
-# Spotify search genre terms for each category slug.
-# These are passed as q='genre:"<term>"' to GET /search.
-_GENRE_QUERIES: dict[str, str] = {
-    "hiphop": 'genre:"hip-hop"',
-    "pop": 'genre:"pop"',
-    "rnb": 'genre:"r&b"',
-    "latin": 'genre:"latin"',
-    "edm_dance": 'genre:"edm"',
-    "rock": 'genre:"rock"',
-    "afro": 'genre:"afrobeats"',
-    "indie_alt": 'genre:"indie"',
-    "soul": 'genre:"soul"',
-    "workout": 'genre:"pop" tag:new',
-    "party": 'genre:"dance pop"',
-    "chill": 'genre:"chill"',
-    "romance": 'genre:"romance"',
-    "mood": 'genre:"pop" tag:new',
+# Plain keyword query lists per category.
+# One is picked at random each run for variety — NO genre: filter so the
+# Spotify search index is always large enough to fill the result page.
+_CATEGORY_QUERIES: dict[str, list[str]] = {
+    "hiphop": [
+        "hip hop hits 2025",
+        "rap songs 2025",
+        "new hip hop 2024",
+        "drill rap 2025",
+        "trap music hits",
+    ],
+    "pop": [
+        "pop hits 2025",
+        "top pop songs 2024",
+        "popular music 2025",
+        "pop chart hits",
+        "new pop 2025",
+    ],
+    "rnb": [
+        "rnb hits 2025",
+        "new r&b songs 2024",
+        "soul rnb 2025",
+        "smooth rnb",
+        "rnb love songs 2025",
+    ],
+    "latin": [
+        "latin hits 2025",
+        "reggaeton 2025",
+        "latin pop 2024",
+        "bachata 2025",
+        "latin urbano 2025",
+    ],
+    "edm_dance": [
+        "edm hits 2025",
+        "dance music 2025",
+        "electronic music 2024",
+        "house music 2025",
+        "techno 2025",
+    ],
+    "rock": [
+        "rock hits 2025",
+        "alternative rock 2024",
+        "indie rock 2025",
+        "rock songs 2025",
+        "metal hits 2025",
+    ],
+    "afro": [
+        "afrobeats 2025",
+        "afrobeats hits 2024",
+        "amapiano 2025",
+        "afropop 2025",
+        "naija hits 2025",
+    ],
+    "indie_alt": [
+        "indie hits 2025",
+        "alternative 2025",
+        "indie pop 2024",
+        "indie folk 2025",
+        "alternative rock 2025",
+    ],
+    "soul": [
+        "soul music 2025",
+        "neo soul 2024",
+        "smooth soul hits",
+        "classic soul",
+        "soul rnb 2025",
+    ],
+    "workout": [
+        "workout hits 2025",
+        "gym music 2025",
+        "hype workout songs",
+        "motivation music 2025",
+        "running songs 2025",
+    ],
+    "party": [
+        "party hits 2025",
+        "dance party songs",
+        "club hits 2024",
+        "party anthems 2025",
+        "bangers 2025",
+    ],
+    "chill": [
+        "chill hits 2025",
+        "lofi chill music",
+        "relaxing songs 2025",
+        "chill vibes 2024",
+        "chillout music",
+    ],
+    "romance": [
+        "love songs 2025",
+        "romantic hits 2024",
+        "slow jams 2025",
+        "romantic songs",
+        "love ballads 2025",
+    ],
+    "mood": [
+        "feel good songs 2025",
+        "mood music 2024",
+        "vibes 2025",
+        "aesthetic songs 2025",
+        "emotional hits 2025",
+    ],
 }
 
-# Cross-genre queries used by get_featured_tracks()
-_FEATURED_QUERIES = [
-    'genre:"pop" tag:new',
-    'genre:"hip-hop" tag:new',
-    'genre:"r&b" tag:new',
-    'genre:"latin" tag:new',
-    'genre:"afrobeats" tag:new',
+# Keyword queries used by get_featured_tracks() fallback
+_FEATURED_QUERIES: list[str] = [
+    "top hits 2025",
+    "best songs 2024",
+    "popular music 2025",
+    "new music friday 2025",
+    "hit songs 2025",
+    "trending songs 2025",
 ]
 
 
@@ -289,15 +373,13 @@ def get_trending_by_category(
     """
     Return tracks for a genre category via Spotify Search.
 
-    Uses ``sp.search(q='genre:"<term>"', type='track')`` with a random offset
-    so consecutive runs return different results.  Falls back to an empty list
-    on any API error (caller handles the fallback).
-
-    ``country`` is accepted for API-signature compatibility but Search does not
-    take a market filter — Spotify returns globally available tracks.
+    Picks a random keyword query from _CATEGORY_QUERIES for variety across
+    runs without relying on offset pagination (Spotify's genre-filter index
+    is too small to paginate safely).
     """
     sp = _get_client()
-    query = _GENRE_QUERIES.get(category_id, f'genre:"{category_id}"')
+    query_pool = _CATEGORY_QUERIES.get(category_id, ["popular music 2025"])
+    query = random.choice(query_pool)
     label = SPOTIFY_CATEGORIES.get(category_id, category_id)
 
     tracks = _search_tracks(sp, query, limit, label, market=country)
@@ -317,7 +399,7 @@ def get_trending_by_category(
 
 def get_featured_tracks(limit: int = 20, country: str = "US") -> list[SpotifyTrack]:
     """
-    Pull a diverse cross-genre set of tracks via Spotify Search.
+    Pull a diverse set of tracks via Spotify Search.
     Used as fallback when a category call returns empty.
     """
     sp = _get_client()
