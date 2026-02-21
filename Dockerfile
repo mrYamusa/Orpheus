@@ -1,9 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-# ffmpeg is required by yt-dlp for audio post-processing
+# ffmpeg  – required by yt-dlp for audio post-processing
+# nodejs  – required by yt-dlp (2025+) to decode YouTube cipher signatures
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

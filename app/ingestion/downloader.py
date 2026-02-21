@@ -74,12 +74,16 @@ def _get_cookie_file() -> str | None:
 
 
 def _common_ydl_opts() -> dict:
-    """Minimal opts shared by all yt-dlp operations (quiet, cookies)."""
+    """Minimal opts shared by all yt-dlp operations (quiet, cookies, JS runtime)."""
     opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
     }
+    # yt-dlp 2025+ requires a JavaScript runtime to decode YouTube cipher
+    # signatures.  Only 'deno' is enabled by default; we explicitly enable
+    # 'nodejs' which is installed in the Docker container.
+    opts["js_runtimes"] = "nodejs"
     cookie_file = _get_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
@@ -103,15 +107,11 @@ def _search_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _common_ydl_opts()
-    # android_vr is the most reliable client on server/datacenter IPs:
-    #   - Does NOT require a GVS PO Token (unlike ios/android/web)
-    #   - Exposes at least format 18 (360p mp4, audio+video combined)
-    # "bestaudio/best": prefers audio-only streams; falls back to "best"
-    # (format 18) when no audio-only is available.  FFmpegExtractAudio then
-    # pulls the audio track and re-encodes to MP3.
+    # With Node.js installed in the container and cookies authenticating the
+    # session, the default web client can resolve all YouTube stream URLs.
+    # No need for android_vr/ios hacks.
     opts.update(
         {
-            "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
             "format": "bestaudio/best",
             "postprocessors": [
                 {
