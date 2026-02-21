@@ -193,15 +193,27 @@ def _search_tracks(
     query: str,
     limit: int,
     genre_label: str,
+    market: str = "US",
 ) -> list[SpotifyTrack]:
     """
     Run one ``sp.search`` call with a random page offset for variety and
     return parsed SpotifyTrack objects.  Returns [] on any error.
+
+    Spotify genre-search paging is capped much lower than the documented 1000;
+    keep offset ≤ 200 to stay inside the safe range.
     """
-    # Random offset so repeated runs surface different songs (max usable: 1000)
-    offset = random.randint(0, max(0, 950 - limit))
+    safe_limit = min(limit, 50)
+    # Keep offset low — genre queries have a much smaller index than general search
+    max_offset = max(0, min(200, 200 - safe_limit))
+    offset = random.randint(0, max_offset)
     try:
-        resp = sp.search(q=query, type="track", limit=min(limit, 50), offset=offset)
+        resp = sp.search(
+            q=query,
+            type="track",
+            limit=safe_limit,
+            offset=offset,
+            market=market,   # avoids sending market=None which causes 400s
+        )
         raw_items = ((resp or {}).get("tracks") or {}).get("items") or []
     except Exception as exc:
         logger.error("Spotify search failed (q=%r): %s", query, exc)
@@ -288,7 +300,7 @@ def get_trending_by_category(
     query = _GENRE_QUERIES.get(category_id, f'genre:"{category_id}"')
     label = SPOTIFY_CATEGORIES.get(category_id, category_id)
 
-    tracks = _search_tracks(sp, query, limit, label)
+    tracks = _search_tracks(sp, query, limit, label, market=country)
     if not tracks:
         logger.warning("No tracks returned for Spotify category '%s'", category_id)
         return []
@@ -311,7 +323,7 @@ def get_featured_tracks(limit: int = 20, country: str = "US") -> list[SpotifyTra
     sp = _get_client()
     query = random.choice(_FEATURED_QUERIES)
 
-    tracks = _search_tracks(sp, query, limit, "featured")
+    tracks = _search_tracks(sp, query, limit, "featured", market=country)
     if not tracks:
         return []
 
