@@ -78,10 +78,19 @@ _model = None
 
 
 def _get_model():
+    """Lazily load VibeNet model (cached until unload_model() is called)."""
     global _model
     if _model is None:
         _model = load_model()
     return _model
+
+
+def unload_model() -> None:
+    """Release the VibeNet model to free ~100+ MB of RAM between songs."""
+    global _model
+    if _model is not None:
+        logger.debug("Unloading VibeNet model to free memory.")
+        _model = None
 
 
 def _clamp_norm(val: float, lo: float, hi: float) -> float:

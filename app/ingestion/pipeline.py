@@ -7,10 +7,10 @@ Source selection (in order of preference):
      → each track looked up on YouTube by "{artist} {title} official audio"
   2. YouTube direct search (fallback when Spotify creds are missing)
 
-Batch behaviour:
-  All N songs are downloaded first, so no feature extraction starts until
-  every audio file is available on disk.  The N files are then processed
-  and stored sequentially to keep peak memory usage predictable.
+Memory-efficient single-song flow:
+  Each song is downloaded, extracted, stored, and cleaned up individually
+  before the next song begins.  The VibeNet model is unloaded and garbage
+  collection is forced between songs to stay within Heroku's 512 MB limit.
 
 Steps per song:
   1. Skip if the YouTube ID is already in Qdrant.
@@ -18,12 +18,13 @@ Steps per song:
   3. Extract song-level features + timestamped frames in one pass.
   4. Upsert the song point (31-dim) into Qdrant.
   5. Upsert all frame points (32-dim) into Qdrant.
-  6. Delete the local audio file.
+  6. Unload model, delete the local audio file, force gc.collect().
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import random
 from pathlib import Path
@@ -31,7 +32,7 @@ from pathlib import Path
 from app.config import settings
 from app.database.qdrant import song_exists, upsert_frames, upsert_song
 from app.ingestion.downloader import VideoMeta, download_song, search_youtube
-from app.ingestion.extractor import extract_all
+from app.ingestion.extractor import extract_all, unload_model
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +209,8 @@ async def run_ingestion_cycle(n_songs: int = settings.SONGS_PER_RUN) -> dict:
 
     1. Fetch N candidate (meta, spotify_track) pairs from Spotify or YouTube.
     2. Filter out already-stored songs.
-    3. Download ALL eligible audio files to scratch dir first.
-    4. Process (extract + store) them SEQUENTIALLY once all downloads are ready.
-    5. Return a summary dict.
+    3. For each eligible song: download → extract → store → cleanup → gc.
+    4. Return a summary dict.
     """
     use_spotify = bool(settings.SPOTIFY_CLIENT_ID and settings.SPOTIFY_CLIENT_SECRET)
 
@@ -252,49 +252,28 @@ async def run_ingestion_cycle(n_songs: int = settings.SONGS_PER_RUN) -> dict:
         }
 
     logger.info(
-        "Cycle: %d eligible song(s) to download+process (skipped %d already stored).",
+        "Cycle: %d eligible song(s) to process (skipped %d already stored).",
         len(eligible),
         skipped_pre,
     )
 
-    # ── Step 3: download ALL eligible songs first ────────────────────────────
-    downloaded: list[tuple[Path, VideoMeta, object]] = []
-    dl_errors = 0
+    # ── Step 3: download → extract → store one song at a time ────────────
+    ingested = 0
+    errors = 0
 
-    for meta, sp_track in eligible:
+    for idx, (meta, sp_track) in enumerate(eligible, 1):
+        audio_path: Path | None = None
         try:
-            logger.info("[Download] %s – %s", meta.artist, meta.title)
+            # ── download ──
+            logger.info("[%d/%d] Downloading: %s – %s", idx, len(eligible), meta.artist, meta.title)
             audio_path, refreshed = await download_song(meta.id, settings.SCRATCH_DIR)
             final_meta = refreshed if refreshed.title != "Unknown Title" else meta
-            downloaded.append((audio_path, final_meta, sp_track))
-        except Exception as exc:
-            logger.error("Download failed for %s: %s", meta.id, exc)
-            dl_errors += 1
 
-    if not downloaded:
-        logger.warning("All downloads failed.")
-        return {
-            "source": "spotify" if use_spotify else "youtube",
-            "ingested": 0,
-            "skipped": skipped_pre,
-            "errors": dl_errors,
-            "downloads": 0,
-        }
-
-    logger.info(
-        "All downloads complete (%d/%d). Starting sequential extraction.",
-        len(downloaded),
-        len(eligible),
-    )
-
-    # ── Step 4: process sequentially ───────────────────────────────────────
-    ingested = 0
-    proc_errors = 0
-
-    for audio_path, final_meta, sp_track in downloaded:
-        try:
+            # ── extract ──
+            logger.info("[%d/%d] Extracting features …", idx, len(eligible))
             song_features, frame_list = await extract_all(audio_path)
 
+            # ── build spotify payload ──
             sp_data: dict = {}
             if sp_track is not None:
                 sp_data = {
@@ -308,6 +287,7 @@ async def run_ingestion_cycle(n_songs: int = settings.SONGS_PER_RUN) -> dict:
                     "spotify_audio_features": sp_track.audio_features.to_dict(),
                 }
 
+            # ── store ──
             song_point_id = upsert_song(
                 vector=song_features.to_embedding(),
                 title=final_meta.title,
@@ -347,8 +327,8 @@ async def run_ingestion_cycle(n_songs: int = settings.SONGS_PER_RUN) -> dict:
 
             logger.info(
                 "[%d/%d] Ingested: %s – %s (%d frames)",
-                ingested + 1,
-                len(downloaded),
+                idx,
+                len(eligible),
                 final_meta.artist,
                 final_meta.title,
                 n_frames,
@@ -357,23 +337,28 @@ async def run_ingestion_cycle(n_songs: int = settings.SONGS_PER_RUN) -> dict:
 
         except Exception as exc:
             logger.error(
-                "Processing failed for %s – %s: %s",
-                final_meta.artist,
-                final_meta.title,
+                "[%d/%d] Failed: %s – %s: %s",
+                idx,
+                len(eligible),
+                meta.artist,
+                meta.title,
                 exc,
                 exc_info=True,
             )
-            proc_errors += 1
+            errors += 1
+
         finally:
-            if audio_path.exists():
+            # Free memory aggressively between songs
+            if audio_path and audio_path.exists():
                 audio_path.unlink(missing_ok=True)
+            unload_model()
+            gc.collect()
 
     summary = {
         "source": "spotify" if use_spotify else "youtube",
-        "downloads": len(downloaded),
         "ingested": ingested,
         "skipped": skipped_pre,
-        "errors": dl_errors + proc_errors,
+        "errors": errors,
     }
     logger.info("Cycle complete: %s", summary)
     return summary
