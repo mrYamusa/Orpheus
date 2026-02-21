@@ -103,14 +103,15 @@ def _search_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _common_ydl_opts()
-    # The ios player client uses YouTube's iOS app API, which is far less
-    # affected by datacenter IP blocks than the web client.  Cookies still
-    # authenticate the session; together they reliably bypass bot detection.
-    # We use "bestaudio/best" (no extension filter) so yt-dlp picks whatever
-    # audio stream the ios client exposes and FFmpeg converts it to MP3.
+    # android_vr is the most reliable client on server/datacenter IPs:
+    #   - Does NOT require a GVS PO Token (unlike ios/android/web)
+    #   - Exposes at least format 18 (360p mp4, audio+video combined)
+    # "bestaudio/best": prefers audio-only streams; falls back to "best"
+    # (format 18) when no audio-only is available.  FFmpegExtractAudio then
+    # pulls the audio track and re-encodes to MP3.
     opts.update(
         {
-            "extractor_args": {"youtube": {"player_client": ["ios"]}},
+            "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
             "format": "bestaudio/best",
             "postprocessors": [
                 {
