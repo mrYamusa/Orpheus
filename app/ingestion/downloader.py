@@ -98,9 +98,9 @@ def _common_ydl_opts() -> dict:
         "noplaylist": True,
     }
     # yt-dlp 2025+ requires a JavaScript runtime to decode YouTube cipher
-    # signatures.  Only 'deno' is enabled by default; we explicitly enable
-    # 'nodejs' which is installed in the Docker container.
-    opts["js_runtimes"] = {"nodejs": {}}
+    # signatures.  Supported names: deno, node, bun, quickjs.
+    # We explicitly enable 'node' which is installed in the Docker container.
+    opts["js_runtimes"] = {"node": {}}
     cookie_file = _get_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
@@ -124,11 +124,6 @@ def _search_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _common_ydl_opts()
-    # Enable verbose yt-dlp output for downloads so we can diagnose
-    # format availability issues in Heroku logs.
-    opts["quiet"] = False
-    opts["no_warnings"] = False
-    opts["verbose"] = True
     opts.update(
         {
             "format": "bestaudio/best",
@@ -194,19 +189,6 @@ def _yt_download_sync(video_id: str, dest_dir: Path) -> tuple[Path, VideoMeta]:
     dest_dir.mkdir(parents=True, exist_ok=True)
     url = f"https://www.youtube.com/watch?v={video_id}"
     output_template = str(dest_dir / f"{video_id}.%(ext)s")
-
-    # ── Diagnostic: list available formats before attempting download ──
-    try:
-        list_opts = _common_ydl_opts()
-        list_opts["quiet"] = False
-        list_opts["no_warnings"] = False
-        list_opts["verbose"] = True
-        list_opts["listformats"] = True
-        with yt_dlp.YoutubeDL(list_opts) as ydl:
-            ydl.extract_info(url, download=False)
-    except Exception as exc:
-        logger.warning("Format listing failed for %s: %s", video_id, exc)
-
     opts = _build_ydl_opts(output_template)
 
     try:

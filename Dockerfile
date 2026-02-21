@@ -3,10 +3,13 @@ FROM python:3.11-slim
 
 # ffmpeg  – required by yt-dlp for audio post-processing
 # nodejs  – required by yt-dlp (2025+) to decode YouTube cipher signatures
+#           yt-dlp looks for the binary name 'node' on PATH.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && (ln -sf "$(which nodejs 2>/dev/null || which node 2>/dev/null)" /usr/local/bin/node 2>/dev/null; true) \
+    && node --version
 
 WORKDIR /app
 
