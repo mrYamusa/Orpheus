@@ -77,21 +77,12 @@ def _get_cookie_file() -> str | None:
     return _cookie_file
 
 
-def _base_ydl_opts() -> dict:
-    """Common yt-dlp options shared by search and download."""
+def _common_ydl_opts() -> dict:
+    """Minimal opts shared by all yt-dlp operations (quiet, cookies)."""
     opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        # Use android client first — avoids bot-check on datacenter IPs.
-        # yt-dlp tries each client in order until one succeeds.
-        "extractor_args": {
-            "youtube": {
-                "player_client": _YT_PLAYER_CLIENTS,
-            }
-        },
-        # Small polite delay between requests
-        "sleep_interval_requests": 15,
     }
     cookie_file = _get_cookie_file()
     if cookie_file:
@@ -99,12 +90,27 @@ def _base_ydl_opts() -> dict:
     return opts
 
 
+def _search_ydl_opts() -> dict:
+    """
+    yt-dlp options for metadata-only search (ytsearch: queries).
+
+    Does NOT override player_client — the default web client is fine for
+    search and avoids 'Requested format is not available' errors that the
+    android/ios clients trigger during format introspection.
+    """
+    return _common_ydl_opts()
+
+
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
-    opts = _base_ydl_opts()
+    opts = _common_ydl_opts()
+    # android/ios clients bypass YouTube's bot-check on datacenter IPs.
+    # Only needed for actual downloads, not metadata searches.
+    opts["extractor_args"] = {"youtube": {"player_client": _YT_PLAYER_CLIENTS}}
+    opts["sleep_interval_requests"] = 15
     opts.update(
         {
-            "format": "bestaudio/best",
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -140,7 +146,7 @@ def _yt_search_sync(query: str, max_results: int) -> list[VideoMeta]:
     Returns up to max_results VideoMeta objects, or [] on any error.
     """
     search_query = f"ytsearch{max_results}:{query}"
-    opts = _base_ydl_opts()
+    opts = _search_ydl_opts()
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(search_query, download=False)
