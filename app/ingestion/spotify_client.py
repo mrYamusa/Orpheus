@@ -199,11 +199,14 @@ def _search_tracks(
     Run one ``sp.search`` call (offset=0, no genre: filter) and return parsed
     SpotifyTrack objects.  Returns [] on any error.
 
-    Plain keyword queries always return a full 50-result page; variety comes
+    Plain keyword queries always return a full 10-result page; variety comes
     from rotating between multiple keyword variants per category rather than
     using offset pagination (Spotify's genre-filter index is too small to page).
+
+    NOTE: Spotify "Essentials" tier (new apps after Nov 2024) hard-caps Search
+    at limit=10.  Requesting limit>10 returns 400 "Invalid limit".
     """
-    safe_limit = min(limit, 50)
+    safe_limit = min(limit, 10)
     try:
         resp = sp.search(
             q=query,
