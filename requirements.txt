@@ -27,7 +27,8 @@ onnxruntime>=1.18.0
 vibenet>=0.1.0
 
 # ── YouTube download ─────────────────────────────────────────
-yt-dlp>=2026.2.4
+# [default] pulls in yt-dlp-ejs (EJS challenge solver scripts for YouTube)
+yt-dlp[default]>=2026.2.4
 
 # ── Spotify (primary song source) ────────────────────────────
 spotipy>=2.24.0

@@ -1,15 +1,20 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-# ffmpeg  – required by yt-dlp for audio post-processing
-# nodejs  – required by yt-dlp (2025+) to decode YouTube cipher signatures
-#           yt-dlp looks for the binary name 'node' on PATH.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    nodejs \
+# ffmpeg – required by yt-dlp for audio post-processing
+# deno   – yt-dlp's recommended JS runtime for YouTube EJS challenge solving
+#          (enabled by default, no --js-runtimes flag needed)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
-    && (ln -sf "$(which nodejs 2>/dev/null || which node 2>/dev/null)" /usr/local/bin/node 2>/dev/null; true) \
-    && node --version
+    && python -c "
+import urllib.request, zipfile, os
+url = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip'
+urllib.request.urlretrieve(url, '/tmp/deno.zip')
+with zipfile.ZipFile('/tmp/deno.zip') as z:
+    z.extractall('/usr/local/bin/')
+os.chmod('/usr/local/bin/deno', 0o755)
+os.remove('/tmp/deno.zip')" \
+    && deno --version
 
 WORKDIR /app
 

@@ -21,20 +21,18 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-# ── Node.js availability check (runs once at import time) ────────────
-_node_path = shutil.which("node")
-if _node_path:
+# ── Deno availability check (runs once at import time) ───────────────
+_deno_path = shutil.which("deno")
+if _deno_path:
     try:
-        _node_ver = subprocess.check_output(
-            [_node_path, "--version"], text=True, timeout=5
-        ).strip()
-        logger.info("Node.js found: %s (%s)", _node_path, _node_ver)
+        _deno_ver = subprocess.check_output(
+            [_deno_path, "--version"], text=True, timeout=5
+        ).strip().split("\n")[0]
+        logger.info("Deno found: %s (%s)", _deno_path, _deno_ver)
     except Exception as exc:
-        logger.warning("Node.js binary found at %s but failed: %s", _node_path, exc)
-        _node_ver = "unknown"
+        logger.warning("Deno binary found at %s but failed: %s", _deno_path, exc)
 else:
-    logger.warning("Node.js NOT found on PATH — yt-dlp cipher solving will fail")
-    _node_ver = None
+    logger.warning("Deno NOT found on PATH — yt-dlp EJS challenge solving will fail")
 
 
 @dataclass
@@ -97,10 +95,9 @@ def _common_ydl_opts() -> dict:
         "no_warnings": True,
         "noplaylist": True,
     }
-    # yt-dlp 2025+ requires a JavaScript runtime to decode YouTube cipher
-    # signatures.  Supported names: deno, node, bun, quickjs.
-    # We explicitly enable 'node' which is installed in the Docker container.
-    opts["js_runtimes"] = {"node": {}}
+    # Deno (yt-dlp's default JS runtime) is installed in the Docker container.
+    # yt-dlp-ejs (EJS challenge solver scripts) is installed via pip.
+    # No js_runtimes override needed — deno is enabled by default.
     cookie_file = _get_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
