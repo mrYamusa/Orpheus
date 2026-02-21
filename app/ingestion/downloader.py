@@ -29,10 +29,6 @@ class VideoMeta:
     webpage_url: str
 
 
-# YouTube client rotation: android/ios bypass the "sign in to confirm" block
-# that Heroku/cloud datacenter IPs trigger on the web client.
-_YT_PLAYER_CLIENTS = ["android", "ios", "web"]
-
 # Cached path to the decoded cookie file (None = not yet resolved)
 _cookie_file: str | None = None
 _cookie_resolved: bool = False
@@ -107,10 +103,9 @@ def _search_ydl_opts() -> dict:
 def _build_ydl_opts(output_template: str) -> dict:
     """yt-dlp options for audio-only mp3 download."""
     opts = _common_ydl_opts()
-    # android/ios clients bypass YouTube's bot-check on datacenter IPs.
-    # Only needed for actual downloads, not metadata searches.
-    opts["extractor_args"] = {"youtube": {"player_client": _YT_PLAYER_CLIENTS}}
-    opts["sleep_interval_requests"] = 15
+    # Cookies authenticate us as a real logged-in user, which bypasses
+    # YouTube's bot detection on the default web client without needing
+    # the android/ios client workaround (those restrict available formats).
     opts.update(
         {
             "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
