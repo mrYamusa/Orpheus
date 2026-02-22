@@ -211,15 +211,15 @@ def search_songs(
     Returns a list of payload dicts augmented with 'score' and 'id'.
     """
     client = get_client()
-    hits = client.search(
+    resp = client.query_points(
         collection_name=settings.QDRANT_COLLECTION,
-        query_vector=query_vector,
+        query=query_vector,
         limit=limit,
         query_filter=filters,
         with_payload=True,
     )
     results = []
-    for hit in hits:
+    for hit in resp.points:
         entry = dict(hit.payload or {})
         entry["id"] = str(hit.id)
         entry["score"] = hit.score
@@ -368,14 +368,14 @@ def search_frames(
     Returns payload dicts enriched with 'score' and 'id'.
     """
     client = get_client()
-    hits = client.search(
+    resp = client.query_points(
         collection_name=settings.FRAME_COLLECTION,
-        query_vector=query_vector,
+        query=query_vector,
         limit=limit,
         with_payload=True,
     )
     results = []
-    for hit in hits:
+    for hit in resp.points:
         entry = dict(hit.payload or {})
         entry["id"] = str(hit.id)
         entry["score"] = hit.score
