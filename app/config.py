@@ -49,7 +49,7 @@ class Settings:
     # Audio feature extraction is offloaded to a Hugging Face Space to avoid
     # OOM on Heroku's 512 MB dynos.  Set the URL to your Space's root.
     HF_EXTRACTION_URL: str = os.getenv(
-        "HF_EXTRACTION_URL", "https://idris-david-orpheus-extractor.hf.space"
+        "HF_EXTRACTION_URL", "https://mryamusa-orpheus-extractor.hf.space"
     )
     HF_EXTRACTION_SECRET: str | None = os.getenv("HF_EXTRACTION_SECRET")
 
