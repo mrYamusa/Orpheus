@@ -1,0 +1,20 @@
+# Keep the HF Space extraction service out of the Heroku image
+orpheus-extractor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Env
+orpheus_env/
+venv/
+.venv/
+.env
+.git/
+.gitignore
+
+# Scratch
+scratch/
+*.mp3
+*.wav
