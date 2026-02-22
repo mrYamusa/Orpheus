@@ -30,6 +30,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +74,7 @@ _MINOR_PROFILE = np.array(
 # librosa hop length used for all feature matrices (≈23ms per frame at 22050 Hz)
 _HOP_LENGTH = 512
 _SR = 22050
+_MAX_DURATION_S = 120.0  # Cap audio to 2 min for librosa (saves ~50% RAM)
 
 _model = None
 
@@ -363,25 +365,39 @@ def _compute_matrices_sync(y: np.ndarray, sr: int) -> dict:
     """
     Compute all librosa feature matrices in one synchronous call (runs in thread).
 
-    New vs previous version:
-      'flux'             — onset_strength envelope  (T,)
-      'harmonic'         — harmonic component  (N,)
-      'percussive'       — percussive component  (N,)
-      'harm_ratio_frames'— per-frame harmonic ratio  (T,)
+    Memory-optimised: the STFT is computed once and shared across all spectral
+    features, then freed before HPSS doubles the waveform.
     """
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=_HOP_LENGTH)
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=_HOP_LENGTH)
-    rms = librosa.feature.rms(y=y, hop_length=_HOP_LENGTH)
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=_HOP_LENGTH)
-    bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr, hop_length=_HOP_LENGTH)
-    rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, hop_length=_HOP_LENGTH)
-    zcr = librosa.feature.zero_crossing_rate(y, hop_length=_HOP_LENGTH)
-    flux = librosa.onset.onset_strength(y=y, sr=sr, hop_length=_HOP_LENGTH)
-    tempo_val, _ = librosa.beat.beat_track(y=y, sr=sr, hop_length=_HOP_LENGTH)
+    # ── Single STFT for all spectral features ──────────────────────────────
+    S = np.abs(librosa.stft(y, hop_length=_HOP_LENGTH))
 
+    chroma = librosa.feature.chroma_stft(S=S, sr=sr, hop_length=_HOP_LENGTH)
+    rms = librosa.feature.rms(S=S)
+    centroid = librosa.feature.spectral_centroid(S=S, sr=sr)
+    bandwidth = librosa.feature.spectral_bandwidth(S=S, sr=sr)
+    rolloff = librosa.feature.spectral_rolloff(S=S, sr=sr)
+
+    # Mel spectrogram (from power = S²) for MFCC + onset strength
+    np.square(S, out=S)                       # in-place magnitude → power
+    mel_S = librosa.feature.melspectrogram(S=S, sr=sr, hop_length=_HOP_LENGTH)
+    del S                                     # free STFT (~20-60 MB)
+
+    mel_db = librosa.power_to_db(mel_S)
+    del mel_S
+
+    mfcc = librosa.feature.mfcc(S=mel_db, sr=sr, n_mfcc=13)
+    flux = librosa.onset.onset_strength(S=mel_db, sr=sr, hop_length=_HOP_LENGTH)
+    del mel_db
+
+    tempo_val, _ = librosa.beat.beat_track(
+        onset_envelope=flux, sr=sr, hop_length=_HOP_LENGTH,
+    )
+    zcr = librosa.feature.zero_crossing_rate(y, hop_length=_HOP_LENGTH)
+
+    # ── HPSS (doubles the waveform briefly) ────────────────────────────────
     harmonic, percussive = librosa.effects.hpss(y)
     rms_harm = librosa.feature.rms(y=harmonic, hop_length=_HOP_LENGTH)[0]
-    rms_total = librosa.feature.rms(y=y, hop_length=_HOP_LENGTH)[0] + 1e-8
+    rms_total = rms[0] + 1e-8
     harm_ratio_frames = np.clip(rms_harm / rms_total, 0.0, 1.0)
 
     return {
@@ -407,28 +423,31 @@ async def extract_all(
     audio_path: str | Path,
 ) -> tuple[SongFeatures, list[FrameFeatures]]:
     """
-    Single-pass extraction.
+    Single-pass extraction — memory-optimised for 512 MB Heroku dynos.
 
-    Loads audio once, computes all librosa matrices once (in a thread),
-    then derives both:
-      - SongFeatures  (whole-song averages)
-      - list[FrameFeatures]  (one entry per 5-second window)
-
-    VibeNet runs in parallel with all librosa work.
+    Stages (sequential to avoid memory overlap):
+      1. VibeNet inference → unload model + gc.collect()
+      2. librosa.load (capped to 2 min)
+      3. Compute feature matrices (single STFT, reused)
+      4. Aggregate song + frame features, free large arrays
     """
     audio_path = str(audio_path)
-    model = _get_model()
     logger.info("Extracting features: %s", audio_path)
 
-    # Stage 1 — VibeNet + audio load (concurrent)
-    async with asyncio.TaskGroup() as tg:
-        t_vibe = tg.create_task(asyncio.to_thread(model.predict, audio_path))
-        t_load = tg.create_task(asyncio.to_thread(librosa.load, audio_path, sr=_SR))
+    # ── Stage 1: VibeNet (runs its own audio loading internally) ───────────
+    model = _get_model()
+    vibe: InferenceResult = (await asyncio.to_thread(model.predict, audio_path))[0]
+    # Free model ASAP — saves ~100 MB before librosa starts
+    unload_model()
+    gc.collect()
 
-    vibe: InferenceResult = t_vibe.result()[0]
-    y, sr = t_load.result()
+    # ── Stage 2: load audio for librosa (capped to 2 min) ─────────────────
+    y, sr = await asyncio.to_thread(
+        librosa.load, audio_path, sr=_SR, duration=_MAX_DURATION_S,
+    )
+    duration_s = float(y.shape[0] / sr)
 
-    # Stage 2 — all librosa matrices + HPSS in one thread
+    # ── Stage 3: all librosa matrices (single-STFT) ───────────────────────
     mats = await asyncio.to_thread(_compute_matrices_sync, y, sr)
 
     mfcc = mats["mfcc"]
@@ -439,17 +458,16 @@ async def extract_all(
     rolloff = mats["rolloff"]
     zcr = mats["zcr"]
     flux = mats["flux"]
-    harmonic = mats["harmonic"]
-    percussive = mats["percussive"]
+    harmonic = mats.pop("harmonic")
+    percussive = mats.pop("percussive")
     harm_ratio_frames = mats["harm_ratio_frames"]
     tempo_val = mats["tempo"]
 
     times = librosa.times_like(rms, sr=sr, hop_length=_HOP_LENGTH)
 
-    # ── Song-level aggregates ──────────────────────────────────────────────────
+    # ── Song-level aggregates ──────────────────────────────────────────────
     tempo_bpm = float(np.atleast_1d(tempo_val)[0])
     key_name, mode = _detect_key_mode(chroma)
-    duration_s = float(librosa.get_duration(y=y, sr=sr))
 
     flux_mean = float(np.mean(flux))
     flux_std = float(np.std(flux))
@@ -463,6 +481,10 @@ async def extract_all(
     instrument_profile = _estimate_instrument_profile(
         y, harmonic, percussive, chroma, centroid[0]
     )
+
+    # Free the three large waveform arrays (~30-45 MB)
+    del y, harmonic, percussive
+    gc.collect()
 
     song = SongFeatures(
         acousticness=vibe.acousticness,
@@ -488,7 +510,7 @@ async def extract_all(
         duration_s=duration_s,
     )
 
-    # ── Frame-level windows ────────────────────────────────────────────────────
+    # ── Frame-level windows ────────────────────────────────────────────────
     frames = _build_frames(
         mfcc,
         chroma,
@@ -516,8 +538,11 @@ async def extract_snippet_embedding(audio_path: str | Path) -> list[float]:
     Same feature layout as FrameFeatures.to_embedding().
     """
     audio_path = str(audio_path)
-    y, sr = await asyncio.to_thread(librosa.load, audio_path, sr=_SR)
+    y, sr = await asyncio.to_thread(
+        librosa.load, audio_path, sr=_SR, duration=_MAX_DURATION_S,
+    )
     mats = await asyncio.to_thread(_compute_matrices_sync, y, sr)
+    del y
 
     harm_ratio = float(
         np.clip(
