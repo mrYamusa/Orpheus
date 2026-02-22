@@ -51,25 +51,41 @@ def get_client() -> QdrantClient:
 
 
 def ensure_collection() -> None:
-    """Create the Qdrant collection if it does not already exist."""
+    """Create the Qdrant collection if it does not already exist.
+
+    If the collection exists but has the wrong vector dimension (e.g. after
+    an embedding schema change), it is deleted and recreated.
+    """
     client = get_client()
     existing = {c.name for c in client.get_collections().collections}
 
-    if settings.QDRANT_COLLECTION not in existing:
-        client.create_collection(
-            collection_name=settings.QDRANT_COLLECTION,
-            vectors_config=qdrant_models.VectorParams(
-                size=settings.EMBEDDING_DIM,
-                distance=qdrant_models.Distance.COSINE,
-            ),
-        )
-        logger.info(
-            "Created Qdrant collection '%s' (dim=%d)",
-            settings.QDRANT_COLLECTION,
-            settings.EMBEDDING_DIM,
-        )
-    else:
-        logger.debug("Collection '%s' already exists.", settings.QDRANT_COLLECTION)
+    if settings.QDRANT_COLLECTION in existing:
+        info = client.get_collection(settings.QDRANT_COLLECTION)
+        current_dim = info.config.params.vectors.size  # type: ignore[union-attr]
+        if current_dim != settings.EMBEDDING_DIM:
+            logger.warning(
+                "Collection '%s' has dim=%d but code expects %d — recreating.",
+                settings.QDRANT_COLLECTION,
+                current_dim,
+                settings.EMBEDDING_DIM,
+            )
+            client.delete_collection(settings.QDRANT_COLLECTION)
+        else:
+            logger.debug("Collection '%s' already exists (dim=%d).", settings.QDRANT_COLLECTION, current_dim)
+            return
+
+    client.create_collection(
+        collection_name=settings.QDRANT_COLLECTION,
+        vectors_config=qdrant_models.VectorParams(
+            size=settings.EMBEDDING_DIM,
+            distance=qdrant_models.Distance.COSINE,
+        ),
+    )
+    logger.info(
+        "Created Qdrant collection '%s' (dim=%d)",
+        settings.QDRANT_COLLECTION,
+        settings.EMBEDDING_DIM,
+    )
 
 
 def upsert_song(
@@ -233,25 +249,37 @@ def collection_stats() -> dict:
 
 
 def ensure_frame_collection() -> None:
-    """Create the frame-level Qdrant collection if it does not already exist."""
+    """Create the frame-level collection, recreating on dimension mismatch."""
     client = get_client()
     existing = {c.name for c in client.get_collections().collections}
 
-    if settings.FRAME_COLLECTION not in existing:
-        client.create_collection(
-            collection_name=settings.FRAME_COLLECTION,
-            vectors_config=qdrant_models.VectorParams(
-                size=settings.FRAME_EMBEDDING_DIM,
-                distance=qdrant_models.Distance.COSINE,
-            ),
-        )
-        logger.info(
-            "Created frame collection '%s' (dim=%d)",
-            settings.FRAME_COLLECTION,
-            settings.FRAME_EMBEDDING_DIM,
-        )
-    else:
-        logger.debug("Frame collection '%s' already exists.", settings.FRAME_COLLECTION)
+    if settings.FRAME_COLLECTION in existing:
+        info = client.get_collection(settings.FRAME_COLLECTION)
+        current_dim = info.config.params.vectors.size  # type: ignore[union-attr]
+        if current_dim != settings.FRAME_EMBEDDING_DIM:
+            logger.warning(
+                "Frame collection '%s' has dim=%d but code expects %d — recreating.",
+                settings.FRAME_COLLECTION,
+                current_dim,
+                settings.FRAME_EMBEDDING_DIM,
+            )
+            client.delete_collection(settings.FRAME_COLLECTION)
+        else:
+            logger.debug("Frame collection '%s' already exists (dim=%d).", settings.FRAME_COLLECTION, current_dim)
+            return
+
+    client.create_collection(
+        collection_name=settings.FRAME_COLLECTION,
+        vectors_config=qdrant_models.VectorParams(
+            size=settings.FRAME_EMBEDDING_DIM,
+            distance=qdrant_models.Distance.COSINE,
+        ),
+    )
+    logger.info(
+        "Created frame collection '%s' (dim=%d)",
+        settings.FRAME_COLLECTION,
+        settings.FRAME_EMBEDDING_DIM,
+    )
 
 
 def frames_exist(youtube_id: str) -> bool:
