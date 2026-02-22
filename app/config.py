@@ -52,6 +52,8 @@ class Settings:
         "HF_EXTRACTION_URL", "https://mryamusa-orpheus-extractor.hf.space"
     )
     HF_EXTRACTION_SECRET: str | None = os.getenv("HF_EXTRACTION_SECRET")
+    # Hugging Face API token — required for private Spaces
+    HF_TOKEN: str | None = os.getenv("HF_TOKEN")
 
     SPOTIFY_CLIENT_ID: str | None = os.getenv("SPOTIFY_CLIENT_ID")
     SPOTIFY_CLIENT_SECRET: str | None = os.getenv("SPOTIFY_CLIENT_SECRET")

@@ -157,8 +157,16 @@ def _hf_url(endpoint: str) -> str:
     return f"{base}/{endpoint.lstrip('/')}"
 
 
+def _hf_headers() -> dict:
+    """Auth headers for private HF Spaces (Bearer token)."""
+    headers: dict[str, str] = {}
+    if settings.HF_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.HF_TOKEN}"
+    return headers
+
+
 def _hf_params() -> dict:
-    """Query params to include in every request (auth secret)."""
+    """Query params to include in every request (app-level secret)."""
     if settings.HF_EXTRACTION_SECRET:
         return {"secret": settings.HF_EXTRACTION_SECRET}
     return {}
@@ -177,7 +185,7 @@ async def extract_all(
     audio_path = Path(audio_path)
     logger.info("Sending to HF extractor: %s", audio_path.name)
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=_hf_headers()) as client:
         with open(audio_path, "rb") as f:
             resp = await client.post(
                 _hf_url("/extract"),
@@ -251,7 +259,7 @@ async def extract_snippet_embedding(audio_path: str | Path) -> list[float]:
     audio_path = Path(audio_path)
     logger.info("Sending snippet to HF extractor: %s", audio_path.name)
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=_hf_headers()) as client:
         with open(audio_path, "rb") as f:
             resp = await client.post(
                 _hf_url("/extract-snippet"),

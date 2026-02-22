@@ -224,6 +224,11 @@ def _check_auth(secret: str | None):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "orpheus-extractor"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
