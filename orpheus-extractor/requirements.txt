@@ -12,6 +12,8 @@ scipy>=1.11.0
 numpy>=1.26.0
 numba>=0.59.0
 
-# ── Deep learning inference ───────────────────────────────────
+# ── Deep learning & multimodal foundations ────────────────────
+torch>=2.2.0 --extra-index-url https://download.pytorch.org/whl/cpu
+transformers>=4.40.0
 onnxruntime>=1.18.0
 vibenet>=0.1.0

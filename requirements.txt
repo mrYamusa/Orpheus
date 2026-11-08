@@ -12,15 +12,10 @@ qdrant-client>=1.9.0
 # ── Scheduler ────────────────────────────────────────────────
 apscheduler>=3.10.0
 
-# ── Lightweight deps (extraction offloaded to HF Space) ──────
+# ── In-Memory Audio & Signal Processing ──────────────────────
 numpy>=1.26.0
-
-# ── YouTube download ─────────────────────────────────────────
-# [default] pulls in yt-dlp-ejs (EJS challenge solver scripts for YouTube)
-yt-dlp[default]>=2026.2.4
-
-# ── Spotify (primary song source) ────────────────────────────
-spotipy>=2.24.0
+scipy>=1.12.0
+av>=12.0.0
 
 # ── HTTP / utils ─────────────────────────────────────────────
 httpx>=0.27.0

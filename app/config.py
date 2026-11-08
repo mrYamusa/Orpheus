@@ -31,16 +31,21 @@ class Settings:
     SCRATCH_DIR: Path = Path(os.getenv("SCRATCH_DIR", "./scratch"))
 
     # ── Embeddings ────────────────────────────────────────────────────────────
-    # Song-level: 7 VibeNet + 8 librosa scalars + 2 spectral (flux+harmonic) + 13 MFCCs
-    #   = 30 total  (must stay in sync with extractor.py SongFeatures)
-    EMBEDDING_DIM: int = 30
+    # Semantic multimodal vector dimension (512 for CLAP model)
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "512"))
 
-    # Frame-level (Shazam-style snippet matching):
-    #   13 MFCCs + 12 chroma + 5 spectral scalars + 1 flux + 1 harmonic = 32
+    # Fingerprint database for instant Shazam-style snippet recognition
+    FINGERPRINT_DB_PATH: Path = Path(os.getenv("FINGERPRINT_DB_PATH", "./fingerprints.db"))
+
+    # Frame-level legacy collection name (kept for backwards compatibility)
     FRAME_COLLECTION: str = os.getenv("FRAME_COLLECTION", "orpheus_frames")
     FRAME_EMBEDDING_DIM: int = 32
     FRAME_WINDOW_S: float = 5.0  # seconds per analysis window
     FRAME_HOP_S: float = 2.5  # hop between window starts (50 % overlap)
+
+    # ── Discovery / Sourcing ──────────────────────────────────────────────────
+    # Sources: "itunes", "deezer", "audius"
+    DISCOVERY_SOURCES: list[str] = ["itunes", "deezer", "audius"]
 
     # ── Spotify (primary song source) ─────────────────────────────────────────
     # Get credentials at https://developer.spotify.com/dashboard

@@ -24,6 +24,9 @@ env/
 
 # ── Scratch / temp audio ──────────────────────────────────────
 scratch/
+*.db
+*.sqlite3
+fingerprints.db
 
 # ── Qdrant local storage (if running without Docker) ──────────
 qdrant_storage/
