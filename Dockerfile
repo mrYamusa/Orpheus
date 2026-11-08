@@ -1,13 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-# ffmpeg – required by yt-dlp for audio post-processing
-# deno   – yt-dlp's recommended JS runtime for YouTube EJS challenge solving
-#          (enabled by default, no --js-runtimes flag needed)
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/* \
-    && python -c "import urllib.request,zipfile,os;urllib.request.urlretrieve('https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip','/tmp/deno.zip');z=zipfile.ZipFile('/tmp/deno.zip');z.extractall('/usr/local/bin/');z.close();os.chmod('/usr/local/bin/deno',0o755);os.remove('/tmp/deno.zip')" \
-    && deno --version
+# System utilities and FFmpeg (as fallback, though PyAV bundles its own codec libs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -16,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Create scratch directory
+# Scratch directory for optional in-flight temporary buffers
 RUN mkdir -p /app/scratch
 
 EXPOSE 8000

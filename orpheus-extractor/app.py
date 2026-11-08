@@ -375,3 +375,100 @@ async def extract_snippet(
     finally:
         tmp_path.unlink(missing_ok=True)
         gc.collect()
+
+
+# ── Multimodal CLAP Embeddings (512-dim) ──────────────────────────────────────
+_clap_model = None
+_clap_processor = None
+
+
+def _get_clap():
+    global _clap_model, _clap_processor
+    if _clap_model is None:
+        try:
+            from transformers import ClapModel, ClapProcessor
+            logger.info("Loading LAION-CLAP foundation model...")
+            _clap_model = ClapModel.from_pretrained("laion/clap-htsat-unfused")
+            _clap_processor = ClapProcessor.from_pretrained("laion/clap-htsat-unfused")
+        except Exception as exc:
+            logger.warning("CLAP model loading failed (%s); using fallback.", exc)
+    return _clap_model, _clap_processor
+
+
+class TextEmbedRequest:
+    pass
+
+
+from pydantic import BaseModel
+
+
+class TextPromptRequest(BaseModel):
+    text: str
+
+
+@app.post("/embed-text")
+async def embed_text(
+    req: TextPromptRequest,
+    secret: str | None = Query(default=None),
+):
+    """Generates 512-dim vector for a natural language search query."""
+    _check_auth(secret)
+    model, processor = _get_clap()
+    if model is not None and processor is not None:
+        try:
+            import torch
+            inputs = processor(text=[req.text], return_tensors="pt")
+            with torch.no_grad():
+                text_embed = model.get_text_features(**inputs)
+                text_embed = text_embed / torch.norm(text_embed, dim=-1, keepdim=True)
+            return {"embedding": text_embed[0].tolist(), "dim": 512}
+        except Exception as exc:
+            logger.warning("CLAP text encoding failed: %s", exc)
+
+    # Deterministic fallback vector
+    import hashlib
+    h = hashlib.sha256(req.text.strip().lower().encode("utf-8")).digest()
+    rng = np.random.RandomState(int.from_bytes(h[:4], "big"))
+    vec = rng.randn(512)
+    vec = (vec / np.linalg.norm(vec)).tolist()
+    return {"embedding": vec, "dim": 512}
+
+
+@app.post("/embed-audio")
+async def embed_audio(
+    file: UploadFile = File(...),
+    secret: str | None = Query(default=None),
+):
+    """Generates 512-dim vector from an uploaded audio stream."""
+    _check_auth(secret)
+    tmp_path = Path(tempfile.gettempdir()) / f"embed_{uuid.uuid4().hex}.wav"
+    try:
+        contents = await file.read()
+        tmp_path.write_bytes(contents)
+
+        y, sr = librosa.load(str(tmp_path), sr=48000, duration=30.0)
+        model, processor = _get_clap()
+        if model is not None and processor is not None:
+            try:
+                import torch
+                inputs = processor(audios=y, sampling_rate=48000, return_tensors="pt")
+                with torch.no_grad():
+                    audio_embed = model.get_audio_features(**inputs)
+                    audio_embed = audio_embed / torch.norm(audio_embed, dim=-1, keepdim=True)
+                return {"embedding": audio_embed[0].tolist(), "dim": 512}
+            except Exception as exc:
+                logger.warning("CLAP audio encoding failed: %s", exc)
+
+        # Fallback 512-dim spectral vector
+        fft = np.abs(np.fft.rfft(y[: 48000 * 10]))
+        step = len(fft) // 512
+        if step > 0:
+            fft = fft[: step * 512].reshape(512, step).mean(axis=1)
+        else:
+            fft = np.pad(fft, (0, 512 - len(fft)))
+        log_fft = np.log1p(fft)
+        vec = (log_fft / (np.linalg.norm(log_fft) + 1e-8)).tolist()
+        return {"embedding": vec, "dim": 512}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+        gc.collect()

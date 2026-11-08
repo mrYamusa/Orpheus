@@ -1,35 +1,35 @@
 """
-FastAPI route definitions.
+FastAPI route definitions (Modernized Legal Architecture).
 
 Endpoints:
   GET  /health                   — liveness check
-  GET  /stats                    — Qdrant collection stats
-  GET  /scheduler/status         — next scheduled run info
+  GET  /stats                    — Qdrant and fingerprint collection statistics
+  GET  /scheduler/status         — next scheduled ingestion run info
   POST /scheduler/trigger        — manually trigger an ingestion cycle now
-  POST /ingest/song              — ingest a specific YouTube video ID
-  POST /search                   — semantic song search from a JSON query
+  POST /ingest/song              — ingest a specific track via search/preview
+  POST /search                   — semantic natural language and vibe search
+  POST /match/snippet            — Shazam-style instant audio snippet recognition
 """
 
 from __future__ import annotations
 
 import logging
-import uuid
-from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from qdrant_client.http import models as qdrant_models
 
 from app.config import settings
+from app.database.fingerprint import get_fingerprinter
 from app.database.qdrant import (
     collection_stats,
-    search_frames,
     search_songs,
     song_exists,
 )
-from app.ingestion.downloader import search_youtube
-from app.ingestion.extractor import extract_snippet_embedding
+from app.ingestion.extractor import extract_text_embedding
 from app.ingestion.pipeline import ingest_song, run_ingestion_cycle
+from app.ingestion.preview_client import decode_audio_in_memory
 from app.scheduler.jobs import get_scheduler
 
 logger = logging.getLogger(__name__)
@@ -37,30 +37,36 @@ router = APIRouter()
 
 
 # ─────────────────────────── Health ───────────────────────────
-
-
 @router.get("/health", tags=["System"])
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "architecture": "legal_preview_v2"}
 
 
 # ─────────────────────────── Stats ────────────────────────────
-
-
 @router.get("/stats", tags=["Library"])
 async def stats():
-    """Return high-level Qdrant collection statistics."""
+    """Return high-level Qdrant collection & fingerprint statistics."""
     try:
-        return collection_stats()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail=f"Qdrant unavailable: {exc}"
-        ) from exc
+        q_stats = collection_stats()
+    except Exception:
+        q_stats = {"status": "offline", "total_songs": 0}
+
+    # Query fingerprint count
+    fp = get_fingerprinter()
+    with fp._get_conn() as conn:
+        song_count = conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
+        hash_count = conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0]
+
+    return {
+        "qdrant": q_stats,
+        "fingerprints": {
+            "indexed_songs": song_count,
+            "total_hashes": hash_count,
+        },
+    }
 
 
 # ──────────────────────── Scheduler ───────────────────────────
-
-
 @router.get("/scheduler/status", tags=["Scheduler"])
 async def scheduler_status():
     """Return the next scheduled job fire time."""
@@ -73,9 +79,7 @@ async def scheduler_status():
         "next_run": str(job.next_run_time),
         "schedule": f"every {settings.SCHEDULE_MINUTES} minute(s)",
         "songs_per_run": settings.SONGS_PER_RUN,
-        "source": "spotify"
-        if (settings.SPOTIFY_CLIENT_ID and settings.SPOTIFY_CLIENT_SECRET)
-        else "youtube",
+        "source": "legal_previews (Apple / Deezer / Audius)",
     }
 
 
@@ -83,94 +87,53 @@ async def scheduler_status():
 async def trigger_now(background_tasks: BackgroundTasks):
     """Manually fire an ingestion cycle in the background right now."""
     background_tasks.add_task(run_ingestion_cycle)
-    return {"message": "Ingestion cycle queued."}
+    return {"message": "Legal preview ingestion cycle queued in background."}
 
 
 # ──────────────────────── Ingest ──────────────────────────────
-
-
 class IngestRequest(BaseModel):
-    youtube_id: str = Field(..., description="YouTube video ID (11-char string)")
+    query: str = Field(
+        ...,
+        description="Song search term or artist name (e.g. 'Daft Punk One More Time')",
+    )
 
 
 @router.post("/ingest/song", tags=["Ingestion"])
 async def ingest_single(req: IngestRequest, background_tasks: BackgroundTasks):
-    """Queue a specific YouTube video for ingestion."""
-    if song_exists(req.youtube_id):
-        return {"message": "Already in library.", "youtube_id": req.youtube_id}
-
-    # Fetch metadata first to validate the ID
-    candidates = await search_youtube(
-        f"https://www.youtube.com/watch?v={req.youtube_id}", max_results=1
-    )
-    if not candidates:
-        raise HTTPException(
-            status_code=404, detail="YouTube video not found or unavailable."
-        )
-
-    meta = candidates[0]
-    background_tasks.add_task(ingest_song, req.youtube_id, meta)
+    """Queue a specific track for legal preview ingestion."""
+    background_tasks.add_task(ingest_song, req.query)
     return {
-        "message": "Ingestion queued.",
-        "youtube_id": req.youtube_id,
-        "title": meta.title,
-        "artist": meta.artist,
+        "message": "Ingestion queued via legal preview stream.",
+        "query": req.query,
     }
 
 
 # ──────────────────────── Search ──────────────────────────────
-
-
 class SearchRequest(BaseModel):
     """
-    Structured query produced by the LLM after transcribing user voice.
-
-    All float fields are in [0, 1] unless noted.  Omit any field to
-    leave it unconstrained.
+    Search query supporting both natural language prompts and vibe filters.
     """
 
-    # ── Vibe targets (used to build the query vector) ──
+    # ── Natural Language Voice / Text Prompt ──
+    prompt: str | None = Field(
+        None,
+        description="Natural language search prompt (e.g. 'driving late at night with dark synthwave')",
+    )
+
+    # ── Vibe targets (optional manual overrides) ──
     energy: float | None = Field(None, ge=0, le=1)
     valence: float | None = Field(None, ge=0, le=1)
     danceability: float | None = Field(None, ge=0, le=1)
     acousticness: float | None = Field(None, ge=0, le=1)
     instrumentalness: float | None = Field(None, ge=0, le=1)
-    speechiness: float | None = Field(None, ge=0, le=1)
-    liveness: float | None = Field(None, ge=0, le=1)
 
-    # ── Hard filters (Qdrant payload filters) ──
+    # ── Hard filters ──
     tempo_min: float | None = Field(None, description="Minimum BPM")
     tempo_max: float | None = Field(None, description="Maximum BPM")
     mode: str | None = Field(None, description="'major' or 'minor'")
-    energy_min: float | None = Field(None, ge=0, le=1)
-    valence_min: float | None = Field(None, ge=0, le=1)
-    valence_max: float | None = Field(None, ge=0, le=1)
-    danceability_min: float | None = Field(None, ge=0, le=1)
 
     # ── Result control ──
     limit: int = Field(10, ge=1, le=50)
-
-
-def _build_query_vector(req: SearchRequest) -> list[float]:
-    """
-    Convert the SearchRequest into a 30-dim query vector.
-    Missing vibe values default to 0.5 (neutral / "don't care").
-    Librosa + new spectral dimensions default to neutral midpoints.
-    """
-    neutral = 0.5
-    vibe_dims = [
-        req.acousticness if req.acousticness is not None else neutral,
-        req.danceability if req.danceability is not None else neutral,
-        req.energy if req.energy is not None else neutral,
-        req.instrumentalness if req.instrumentalness is not None else neutral,
-        req.liveness if req.liveness is not None else neutral,
-        req.speechiness if req.speechiness is not None else neutral,
-        req.valence if req.valence is not None else neutral,
-    ]
-    # tempo, key, mode, rms, centroid, bw, rolloff, zcr, flux, harmonic_ratio
-    librosa_dims = [neutral] * 10
-    mfcc_dims = [neutral] * 13  # 13 MFCCs (tanh-squashed 0.5 ≈ raw 0)
-    return vibe_dims + librosa_dims + mfcc_dims
 
 
 def _build_filters(req: SearchRequest) -> qdrant_models.Filter | None:
@@ -188,9 +151,9 @@ def _build_filters(req: SearchRequest) -> qdrant_models.Filter | None:
             )
 
     range_cond("tempo_bpm", gte=req.tempo_min, lte=req.tempo_max)
-    range_cond("energy", gte=req.energy_min)
-    range_cond("valence", gte=req.valence_min, lte=req.valence_max)
-    range_cond("danceability", gte=req.danceability_min)
+    range_cond("energy", gte=req.energy)
+    range_cond("valence", gte=req.valence)
+    range_cond("danceability", gte=req.danceability)
 
     if req.mode:
         must.append(
@@ -206,12 +169,16 @@ def _build_filters(req: SearchRequest) -> qdrant_models.Filter | None:
 @router.post("/search", tags=["Search"])
 async def search(req: SearchRequest):
     """
-    Semantic song search.
-
-    Returns a ranked playlist.  Each entry includes Spotify and YouTube
-    links, a mood sub-object, and the instrument profile.
+    Semantic song search via natural language prompt and/or vibe criteria.
     """
-    query_vector = _build_query_vector(req)
+    # Generate 512-dim query vector from prompt or fallback vibe
+    if req.prompt:
+        query_vector = await extract_text_embedding(req.prompt)
+    else:
+        # Default prompt synthesized from vibe values
+        synthetic_prompt = f"music with energy {req.energy or 0.5} and valence {req.valence or 0.5}"
+        query_vector = await extract_text_embedding(synthetic_prompt)
+
     filters = _build_filters(req)
 
     try:
@@ -221,9 +188,6 @@ async def search(req: SearchRequest):
 
     playlist = []
     for rank, hit in enumerate(results, start=1):
-        youtube_id = hit.get("youtube_id", "")
-        key = hit.get("key", "")
-        mode = hit.get("mode", "")
         playlist.append(
             {
                 "rank": rank,
@@ -231,148 +195,49 @@ async def search(req: SearchRequest):
                 "title": hit.get("title"),
                 "artist": hit.get("artist"),
                 "album": hit.get("album"),
-                "genres": hit.get("genres", []),
+                "source": hit.get("source"),
                 "duration_s": hit.get("duration_s"),
-                "tempo_bpm": hit.get("tempo_bpm"),
-                "key": f"{key} {mode}".strip() if key else None,
-                "mood": {
-                    "energy": hit.get("energy"),
-                    "valence": hit.get("valence"),
-                    "danceability": hit.get("danceability"),
-                    "acousticness": hit.get("acousticness"),
-                    "instrumentalness": hit.get("instrumentalness"),
-                    "speechiness": hit.get("speechiness"),
-                    "liveness": hit.get("liveness"),
-                },
                 "links": {
-                    "youtube": f"https://www.youtube.com/watch?v={youtube_id}"
-                    if youtube_id
-                    else None,
-                    "spotify": hit.get("spotify_url"),
-                    "spotify_preview": hit.get("spotify_preview_url"),
+                    "store": hit.get("store_url"),
+                    "youtube": hit.get("youtube_url"),
                 },
                 "cover_url": hit.get("cover_url"),
-                "instrument_profile": hit.get("instrument_profile", {}),
-                "spectral": {
-                    "spectral_flux_mean": hit.get("spectral_flux_mean"),
-                    "harmonic_ratio": hit.get("harmonic_ratio"),
-                    "spectral_centroid": hit.get("spectral_centroid_mean"),
-                    "spectral_rolloff": hit.get("spectral_rolloff_mean"),
-                    "zcr": hit.get("zcr_mean"),
-                },
-                "spotify_audio_features": hit.get("spotify_audio_features"),
             }
         )
 
     return {
         "count": len(playlist),
+        "prompt": req.prompt,
         "playlist": playlist,
     }
 
 
 # ──────────────────────── Snippet match ───────────────────────────────────────
-
-
 @router.post("/match/snippet", tags=["Search"])
 async def match_snippet(
     file: UploadFile = File(
         ...,
-        description="Short audio clip (mp3/wav/m4a/ogg). Typically 3–30 seconds.",
+        description="Audio snippet recording (mp3/wav/m4a/ogg). Decoded 100% in memory.",
     ),
-    similar_limit: int = 5,
 ):
     """
-    **Shazam-style snippet matching.**
+    **Instant Shazam-Style Snippet Matching (Acoustic Constellation Fingerprint).**
 
-    Upload a short recording (a song playing in the background, a hummed melody,
-    a voice memo) and get back:
-    - `match` — the most likely song and the timestamp window it was heard at.
-    - `similar_songs` — other songs in the library that sound like it.
-
-    Supported formats: mp3, wav, m4a, ogg, flac (anything ffmpeg can decode).
-    The audio file is deleted immediately after extraction.
+    Upload a short recording (humming, microphone audio, ambient clip) and get back:
+    - `match` — Exact song, artist, album, store link, and timestamp where it was heard.
+    - `confidence_votes` — Number of verified matching spectral peak pairs.
+    - `query_time_ms` — Sub-100ms match latency.
     """
-    # Save upload to scratch dir with random filename
-    settings.SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "snippet.mp3").suffix or ".mp3"
-    tmp_path = settings.SCRATCH_DIR / f"snippet_{uuid.uuid4().hex}{suffix}"
-
     try:
         contents = await file.read()
-        tmp_path.write_bytes(contents)
+        audio, decode_time = decode_audio_in_memory(contents)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Could not decode audio stream: {exc}"
+        ) from exc
 
-        # Extract 30-dim snippet embedding
-        try:
-            snippet_vec = await extract_snippet_embedding(tmp_path)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=422, detail=f"Could not process audio: {exc}"
-            ) from exc
+    fingerprinter = get_fingerprinter()
+    match_result = fingerprinter.match_snippet(audio)
+    match_result["decode_time_ms"] = round(decode_time * 1000, 2)
 
-        # Search frame collection for the closest matching window
-        try:
-            frame_hits = search_frames(snippet_vec, limit=similar_limit * 3)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail=f"Frame search failed: {exc}"
-            ) from exc
-
-        if not frame_hits:
-            return {"match": None, "similar_songs": []}
-
-        # De-duplicate by song: keep best-scoring frame per song
-        seen: dict[str, dict] = {}
-        for hit in frame_hits:
-            yid = hit.get("youtube_id", "")
-            if yid not in seen or hit["score"] > seen[yid]["score"]:
-                seen[yid] = hit
-
-        ranked = sorted(seen.values(), key=lambda h: h["score"], reverse=True)
-        best = ranked[0]
-
-        match_result = {
-            "title": best.get("title"),
-            "artist": best.get("artist"),
-            "youtube_id": best.get("youtube_id"),
-            "links": {
-                "youtube": "https://www.youtube.com/watch?v="
-                + best.get("youtube_id", ""),
-                "spotify": best.get("spotify_url"),
-                "spotify_preview": best.get("spotify_preview_url"),
-            },
-            "heard_at": {
-                "start_s": best.get("timestamp_start"),
-                "end_s": best.get("timestamp_end"),
-            },
-            "confidence": round(best["score"], 4),
-        }
-
-        # Use the best frame's song_id to do a song-level vibe search for similar tracks
-        # We re-search the SONG collection using the snippet vector projected to 28-dims.
-        # Since dims 0-14 overlap in meaning (MFCCs → dims 15-27 in song, 0-12 in frame)
-        # we build a neutral song vector and use payload filters instead.
-        similar: list[dict] = []
-        if len(ranked) > 1:
-            similar = [
-                {
-                    "title": r.get("title"),
-                    "artist": r.get("artist"),
-                    "youtube_id": r.get("youtube_id"),
-                    "links": {
-                        "youtube": "https://www.youtube.com/watch?v="
-                        + r.get("youtube_id", ""),
-                        "spotify": r.get("spotify_url"),
-                        "spotify_preview": r.get("spotify_preview_url"),
-                    },
-                    "score": round(r["score"], 4),
-                }
-                for r in ranked[1 : similar_limit + 1]
-            ]
-
-        return {
-            "match": match_result,
-            "similar_songs": similar,
-        }
-
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    return match_result

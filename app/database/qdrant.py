@@ -33,6 +33,9 @@ def get_client() -> QdrantClient:
                 api_key=settings.QDRANT_API_KEY,
             )
             logger.info("Qdrant client connected (cloud) → %s", settings.QDRANT_URL)
+        elif settings.QDRANT_HOST in (":memory:", "memory"):
+            _client = QdrantClient(":memory:")
+            logger.info("Qdrant client connected (in-memory mode)")
         else:
             # ── Local mode (Docker Compose / bare metal) ─────────────────────
             kwargs: dict[str, Any] = {
@@ -93,55 +96,62 @@ def upsert_song(
     vector: list[float],
     title: str,
     artist: str,
-    youtube_id: str,
-    duration_s: float,
-    tempo_bpm: float,
-    key: str,
-    mode: str,
-    acousticness: float,
-    danceability: float,
-    energy: float,
-    instrumentalness: float,
-    liveness: float,
-    speechiness: float,
-    valence: float,
-    rms_mean: float,
-    spectral_centroid_mean: float,
-    spectral_bandwidth_mean: float,
-    spectral_rolloff_mean: float,
-    zcr_mean: float,
-    # New spectral features
+    track_id: str | None = None,
+    youtube_id: str | None = None,
+    store_url: str | None = None,
+    duration_s: float = 30.0,
+    source: str = "itunes",
+    tempo_bpm: float = 0.0,
+    key: str = "C",
+    mode: str = "major",
+    acousticness: float = 0.0,
+    danceability: float = 0.0,
+    energy: float = 0.0,
+    instrumentalness: float = 0.0,
+    liveness: float = 0.0,
+    speechiness: float = 0.0,
+    valence: float = 0.0,
+    rms_mean: float = 0.0,
+    spectral_centroid_mean: float = 0.0,
+    spectral_bandwidth_mean: float = 0.0,
+    spectral_rolloff_mean: float = 0.0,
+    zcr_mean: float = 0.0,
     spectral_flux_mean: float = 0.0,
     spectral_flux_std: float = 0.0,
     harmonic_ratio: float = 0.0,
     mfcc_means: list[float] | None = None,
     instrument_profile: dict | None = None,
-    # Spotify fields (optional — only set when ingested via Spotify source)
-    spotify_id: str | None = None,
-    spotify_url: str | None = None,
-    spotify_preview_url: str | None = None,
     album: str | None = None,
     genres: list[str] | None = None,
     popularity: int | None = None,
     cover_url: str | None = None,
+    spotify_id: str | None = None,
+    spotify_url: str | None = None,
+    spotify_preview_url: str | None = None,
     spotify_audio_features: dict | None = None,
 ) -> str:
     """Insert or update a single song point. Returns the point UUID."""
     client = get_client()
-    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"yt:{youtube_id}"))
+    canonical_id = track_id or youtube_id or f"{artist}_{title}"
+    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"track:{canonical_id}"))
 
     payload: dict[str, Any] = {
         # ── Identity ──────────────────────────────────────────────────────────
+        "track_id": canonical_id,
         "title": title,
         "artist": artist,
-        "youtube_id": youtube_id,
-        "youtube_url": f"https://www.youtube.com/watch?v={youtube_id}",
+        "album": album or "",
+        "source": source,
+        "store_url": store_url or (f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else ""),
+        "youtube_id": youtube_id or "",
+        "youtube_url": f"https://www.youtube.com/watch?v={youtube_id}" if youtube_id else None,
+        "cover_url": cover_url,
         "duration_s": duration_s,
         # ── Tempo / key ───────────────────────────────────────────────────────
         "tempo_bpm": tempo_bpm,
         "key": key,
         "mode": mode,
-        # ── VibeNet features ──────────────────────────────────────────────────
+        # ── Acoustic / Vibe features ──────────────────────────────────────────
         "acousticness": acousticness,
         "danceability": danceability,
         "energy": energy,
@@ -149,31 +159,27 @@ def upsert_song(
         "liveness": liveness,
         "speechiness": speechiness,
         "valence": valence,
-        # ── Librosa scalars ───────────────────────────────────────────────────
         "rms_mean": rms_mean,
         "spectral_centroid_mean": spectral_centroid_mean,
         "spectral_bandwidth_mean": spectral_bandwidth_mean,
         "spectral_rolloff_mean": spectral_rolloff_mean,
         "zcr_mean": zcr_mean,
-        # ── New spectral features ─────────────────────────────────────────────
         "spectral_flux_mean": spectral_flux_mean,
         "spectral_flux_std": spectral_flux_std,
         "harmonic_ratio": harmonic_ratio,
         "mfcc_means": mfcc_means or [],
         "instrument_profile": instrument_profile or {},
+        "genres": genres or [],
+        "popularity": popularity or 0,
     }
 
-    # ── Spotify sub-payload (only added when available) ───────────────────────
     if spotify_id:
         payload["spotify_id"] = spotify_id
         payload["spotify_url"] = spotify_url or ""
         payload["spotify_preview_url"] = spotify_preview_url
-        payload["album"] = album or ""
-        payload["genres"] = genres or []
-        payload["popularity"] = popularity or 0
-        payload["cover_url"] = cover_url
         payload["spotify_audio_features"] = spotify_audio_features or {}
 
+    ensure_collection()
     client.upsert(
         collection_name=settings.QDRANT_COLLECTION,
         points=[
@@ -184,21 +190,25 @@ def upsert_song(
             )
         ],
     )
-    logger.info("Upserted song '%s \u2013 %s' (id=%s)", artist, title, point_id)
+    logger.info("Upserted song '%s – %s' (id=%s)", artist, title, point_id)
     return point_id
 
 
-def song_exists(youtube_id: str) -> bool:
-    """Return True if a song with this YouTube ID is already in the collection."""
+def song_exists(identifier: str) -> bool:
+    """Return True if a song with this ID is already in the collection."""
     client = get_client()
-    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"yt:{youtube_id}"))
-    results = client.retrieve(
-        collection_name=settings.QDRANT_COLLECTION,
-        ids=[point_id],
-        with_payload=False,
-        with_vectors=False,
-    )
-    return len(results) > 0
+    try:
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"track:{identifier}"))
+        legacy_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"yt:{identifier}"))
+        results = client.retrieve(
+            collection_name=settings.QDRANT_COLLECTION,
+            ids=[point_id, legacy_id],
+            with_payload=False,
+            with_vectors=False,
+        )
+        return len(results) > 0
+    except Exception:
+        return False
 
 
 def search_songs(
@@ -211,20 +221,24 @@ def search_songs(
     Returns a list of payload dicts augmented with 'score' and 'id'.
     """
     client = get_client()
-    resp = client.query_points(
-        collection_name=settings.QDRANT_COLLECTION,
-        query=query_vector,
-        limit=limit,
-        query_filter=filters,
-        with_payload=True,
-    )
-    results = []
-    for hit in resp.points:
-        entry = dict(hit.payload or {})
-        entry["id"] = str(hit.id)
-        entry["score"] = hit.score
-        results.append(entry)
-    return results
+    try:
+        resp = client.query_points(
+            collection_name=settings.QDRANT_COLLECTION,
+            query=query_vector,
+            limit=limit,
+            query_filter=filters,
+            with_payload=True,
+        )
+        results = []
+        for hit in resp.points:
+            entry = dict(hit.payload or {})
+            entry["id"] = str(hit.id)
+            entry["score"] = hit.score
+            results.append(entry)
+        return results
+    except Exception as exc:
+        logger.warning("Qdrant query failed (%s); returning empty results.", exc)
+        return []
 
 
 def collection_stats() -> dict:
